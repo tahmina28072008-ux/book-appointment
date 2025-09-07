@@ -304,19 +304,24 @@ def webhook():
                             next_date_str = next_date.strftime('%Y-%m-%d')
                             available_doctors = find_available_doctors(specialty, location, next_date_str)
                             if available_doctors:
-                                response_text = f"I could not find any appointments for {requested_date.strftime('%B %d, %Y')}. However, I found some for the next available date, which is {next_date.strftime('%B %d, %Y')}: "
+                                response_text_list = []
                                 found_next_date = True
+                                for i, doc in enumerate(available_doctors):
+                                    response_text_list.append(f"{i+1}. {doc['name']}")
+                                    response_text_list.append(f"   Available date: {datetime.strptime(doc['date'], '%Y-%m-%d').strftime('%B %d, %Y')}")
+                                    response_text_list.append(f"   Available times: {doc['times']}")
+                                response_text = "\n".join(response_text_list)
                                 break
                         
                         if not found_next_date:
                             response_text = f"I could not find any {specialty} doctors in {location} available on or after {requested_date.strftime('%B %d, %Y')}. Would you like to check a different date or location?"
                     else:
-                        response_text = f"I found the following doctors available on {requested_date.strftime('%B %d, %Y')}: "
-
-                    # Append doctor details to the response if found
-                    if available_doctors:
-                        doctor_list_text = " and ".join([f"{doc['name']} has openings at {doc['times']}." for doc in available_doctors])
-                        response_text += f"{doctor_list_text} Which one would you like to book with?"
+                        response_text_list = []
+                        for i, doc in enumerate(available_doctors):
+                            response_text_list.append(f"{i+1}. {doc['name']}")
+                            response_text_list.append(f"   Available date: {datetime.strptime(doc['date'], '%Y-%m-%d').strftime('%B %d, %Y')}")
+                            response_text_list.append(f"   Available times: {doc['times']}")
+                        response_text = "\n".join(response_text_list)
                     
             except Exception as e:
                 logging.error(f"Error searching for doctors: {e}")
