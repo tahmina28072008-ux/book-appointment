@@ -8,8 +8,8 @@ import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import traceback # <-- Added this for full error logging
-import uuid # <-- Added this for generating booking IDs
+import traceback
+import uuid
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -59,7 +59,7 @@ MOCK_DOCTORS = {
         'specialty': 'General Practitioner',
         'city': 'New York',
         'availability': {
-            '2025-09-03': {
+            '2025-09-07': { # Updated date for today
                 '13:00': True,
                 '14:00': True,
             }
@@ -69,11 +69,16 @@ MOCK_DOCTORS = {
         'id': 'gp-002',
         'name': 'Dr. Adam Collins, MRCGP',
         'specialty': 'General Practitioner',
-        'city': 'New York',
+        'city': 'London',
         'availability': {
-            '2025-09-03': {
+            '2025-09-07': { # Updated date for today
                 '10:00': True,
                 '11:00': False, # This slot is already booked
+                '12:00': True,
+            },
+             '2025-09-08': { # Adding an extra day for testing
+                '09:00': True,
+                '10:00': True,
             }
         }
     }
@@ -94,7 +99,6 @@ INSURANCE_RATES = {
         "co_pay": 50.00
     }
 }
-
 
 # --- Core Business Logic Functions ---
 def calculate_appointment_cost(insurance_provider: str) -> dict:
@@ -222,26 +226,30 @@ def webhook():
     
     if tag == 'search_doctors':
         specialty = parameters.get('specialty')
-        # FIX: Check if the location parameter is a dictionary or a string
         location_param = parameters.get('location')
         if isinstance(location_param, dict):
             location = location_param.get('city')
         else:
             location = location_param
         
+        # --- NEW LOGIC: Use current date if none is provided ---
         date_param = parameters.get('date')
-
-        if isinstance(date_param, str):
-            date_str = date_param
+        if date_param:
+            if isinstance(date_param, str):
+                date_str = date_param.split('T')[0]
+            else:
+                response_text = "I couldn't understand the date provided. Please try again."
+                return jsonify({'fulfillmentResponse': {'messages': [{'text': {'text': [response_text]}}]}})
         else:
-            response_text = "I couldn't understand the date provided. Please try again."
-            return jsonify({'fulfillmentResponse': {'messages': [{'text': {'text': [response_text]}}]}})
-
-        if not specialty or not location or not date_str:
-            response_text = "I'm missing some information. Please provide your preferred specialty, location, and date."
+            # If no date is provided, use the current date
+            date_str = datetime.now().strftime('%Y-%m-%d')
+            logging.info(f"No date provided. Using current date: {date_str}")
+        
+        if not specialty or not location:
+            response_text = "I'm missing some information. Please provide your preferred specialty and location."
         else:
             try:
-                requested_date = datetime.strptime(date_str.split('T')[0], '%Y-%m-%d').date()
+                requested_date = datetime.strptime(date_str, '%Y-%m-%d').date()
                 today = datetime.now().date()
                 
                 if requested_date < today:
@@ -254,8 +262,8 @@ def webhook():
                         for doc in docs:
                             doctor_data = doc.to_dict()
                             availability_map = doctor_data.get('availability', {})
-                            if requested_date.isoformat() in availability_map:
-                                available_times = [time for time, is_available in availability_map[requested_date.isoformat()].items() if is_available]
+                            if date_str in availability_map:
+                                available_times = [time for time, is_available in availability_map[date_str].items() if is_available]
                                 if available_times:
                                     available_doctors.append({
                                         'name': doctor_data.get('name'),
@@ -265,8 +273,8 @@ def webhook():
                         for doc in MOCK_DOCTORS.values():
                             if doc['specialty'] == specialty and doc['city'] == location:
                                 availability_map = doc.get('availability', {})
-                                if requested_date.isoformat() in availability_map:
-                                    available_times = [time for time, is_available in availability_map[requested_date.isoformat()].items() if is_available]
+                                if date_str in availability_map:
+                                    available_times = [time for time, is_available in availability_map[date_str].items() if is_available]
                                     if available_times:
                                         available_doctors.append({
                                             'name': doc.get('name'),
@@ -274,19 +282,17 @@ def webhook():
                                         })
                     
                     if available_doctors:
-                        doctor_list_text = " and ".join([f"{doc['name']} has availability at {doc['times']}" for doc in available_doctors])
-                        response_text = f"I found the following doctors: {doctor_list_text}."
+                        doctor_list_text = " and ".join([f"{doc['name']} at {doc['times']}" for doc in available_doctors])
+                        response_text = f"I found the following doctors available on {requested_date.strftime('%B %d, %Y')}: {doctor_list_text}. Which one would you like to book with?"
                     else:
                         response_text = f"I could not find any {specialty} doctors in {location} available on {requested_date.strftime('%B %d, %Y')}. Would you like to check a different date or location?"
             except Exception as e:
                 logging.error(f"Error searching for doctors: {e}")
-                logging.error(traceback.format_exc()) # <-- Log the full traceback
+                logging.error(traceback.format_exc())
                 response_text = "I am having trouble looking for doctors right now. Please try again later."
     
-    # NEW CODE BLOCK: Handle the 'ConfirmCost' tag
     elif tag == 'ConfirmCost':
         try:
-            # Extract parameters for booking
             patient_name = parameters.get('name', {}).get('name')
             dob = parameters.get('dateofbirth')
             insurance_provider = parameters.get('insuranceprovider')
@@ -294,20 +300,15 @@ def webhook():
             specialty = parameters.get('specialty')
             location = parameters.get('location')
             
-            # Note: Dialogflow's booking flow doesn't pass a specific doctor name or appointment time
-            # from the previous step, so we will need to handle that. Assuming there's a doctor
-            # selected or the flow is simplified to a single option for this demo.
-            # I will use mock data as a fallback to continue the flow.
-            doctor_name = "Dr. Tahmina Akhtar" # Placeholder
-            appointment_date_param = "2025-09-07" # Placeholder
-            appointment_time = "09:00" # Placeholder
+            doctor_name = "Dr. Tahmina Akhtar"
+            appointment_date_param = "2025-09-07"
+            appointment_time = "09:00"
 
             if not all([patient_name, dob, insurance_provider, policy_number, specialty, location]):
                 response_text = "I'm missing some information to complete your booking. Please provide all details."
             else:
                 cost_details = calculate_appointment_cost(insurance_provider)
                 
-                # Check if the patient exists in mock data to get email
                 patient_data = MOCK_PATIENTS.get(patient_name.split(' ')[0])
                 if patient_data:
                     booking_details = {
@@ -327,8 +328,6 @@ def webhook():
                     response_text = "I could not find a patient with the provided details to confirm your booking. Please check your information."
 
         except Exception as e:
-            # This is the critical change.
-            # Now we are logging the full error and the traceback.
             logging.error(f"Error during ConfirmCost process: {e}")
             logging.error(traceback.format_exc())
             response_text = "I am having trouble confirming your booking right now. Please try again later."
@@ -336,7 +335,6 @@ def webhook():
 
     elif tag == 'book_appointment':
         try:
-            # Extract parameters for booking
             patient_name = parameters.get('patient_name')
             dob = parameters.get('dob')
             insurance_provider = parameters.get('insurance_provider')
@@ -346,7 +344,6 @@ def webhook():
             appointment_date_param = parameters.get('appointment_date')
             appointment_time = parameters.get('appointment_time')
 
-            # Extract date string from the full date object
             if isinstance(appointment_date_param, dict):
                 appointment_date = appointment_date_param.get('date_time', '').split('T')[0]
             else:
@@ -355,7 +352,6 @@ def webhook():
             if not all([patient_name, dob, insurance_provider, policy_number, specialty, doctor_name, appointment_date, appointment_time]):
                 response_text = "I'm missing some information to complete your booking. Please provide all details."
             else:
-                # Find the patient and doctor to proceed with the booking
                 patient_doc_ref = None
                 if db:
                     patients_ref = db.collection('patients')
@@ -379,7 +375,6 @@ def webhook():
                         if not doctor_doc_ref:
                             response_text = "The doctor you selected could not be found."
                         else:
-                            # Check availability and update Firestore
                             if doctor_data.get('availability', {}).get(appointment_date, {}).get(appointment_time):
                                 cost_details = calculate_appointment_cost(insurance_provider)
                                 booking_details = {
@@ -394,16 +389,13 @@ def webhook():
                                     "createdAt": firestore.SERVER_TIMESTAMP
                                 }
 
-                                # Update doctor's availability
                                 update_path = f"availability.{appointment_date}.{appointment_time}"
                                 doctor_doc_ref.update({update_path: False})
 
-                                # Add booking to patient's document
                                 current_bookings = patient_data.get('bookings', [])
                                 current_bookings.append(booking_details)
                                 patient_doc_ref.update({'bookings': current_bookings})
 
-                                # Send email
                                 patient_email = patient_data.get('email')
                                 if patient_email:
                                     send_email_to_patient(patient_email, booking_details)
@@ -411,9 +403,9 @@ def webhook():
                                 response_text = f"Success! Your booking has been confirmed. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
                             else:
                                 response_text = "I'm sorry, that time slot is no longer available. Please select a different time."
-                else: # Mock data fallback for booking
+                else:
                     patient_data = MOCK_PATIENTS.get(patient_name)
-                    doctor_data = MOCK_DOCTORS.get('gp-001') # simplified mock logic
+                    doctor_data = MOCK_DOCTORS.get('gp-001')
                     if patient_data and doctor_data and doctor_data['availability'].get(appointment_date, {}).get(appointment_time):
                         cost_details = calculate_appointment_cost(insurance_provider)
                         booking_details = {
@@ -436,10 +428,9 @@ def webhook():
             
         except Exception as e:
             logging.error(f"Error during booking process: {e}")
-            logging.error(traceback.format_exc()) # <-- Log the full traceback
+            logging.error(traceback.format_exc())
             response_text = "I am having trouble processing your booking right now. Please try again later."
 
-    # Construct and return the Dialogflow-formatted JSON response
     logging.info(f"Sending response to Dialogflow: {response_text}")
     return jsonify({
         'fulfillmentResponse': {
