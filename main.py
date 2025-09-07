@@ -222,7 +222,13 @@ def webhook():
     
     if tag == 'search_doctors':
         specialty = parameters.get('specialty')
-        location = parameters.get('location', {}).get('city')
+        # FIX: Check if the location parameter is a dictionary or a string
+        location_param = parameters.get('location')
+        if isinstance(location_param, dict):
+            location = location_param.get('city')
+        else:
+            location = location_param
+        
         date_param = parameters.get('date')
 
         if isinstance(date_param, str):
