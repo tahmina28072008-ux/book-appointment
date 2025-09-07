@@ -1,4 +1,3 @@
-
 import os
 from flask import Flask, request, jsonify
 import firebase_admin
@@ -9,6 +8,8 @@ import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import traceback # <-- Added this for full error logging
+import uuid # <-- Added this for generating booking IDs
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -273,8 +274,60 @@ def webhook():
                         response_text = f"I could not find any {specialty} doctors in {location} available on {requested_date.strftime('%B %d, %Y')}. Would you like to check a different date or location?"
             except Exception as e:
                 logging.error(f"Error searching for doctors: {e}")
+                logging.error(traceback.format_exc()) # <-- Log the full traceback
                 response_text = "I am having trouble looking for doctors right now. Please try again later."
     
+    # NEW CODE BLOCK: Handle the 'ConfirmCost' tag
+    elif tag == 'ConfirmCost':
+        try:
+            # Extract parameters for booking
+            patient_name = parameters.get('name', {}).get('name')
+            dob = parameters.get('dateofbirth')
+            insurance_provider = parameters.get('insuranceprovider')
+            policy_number = parameters.get('policynumber')
+            specialty = parameters.get('specialty')
+            location = parameters.get('location')
+            
+            # Note: Dialogflow's booking flow doesn't pass a specific doctor name or appointment time
+            # from the previous step, so we will need to handle that. Assuming there's a doctor
+            # selected or the flow is simplified to a single option for this demo.
+            # I will use mock data as a fallback to continue the flow.
+            doctor_name = "Dr. Tahmina Akhtar" # Placeholder
+            appointment_date_param = "2025-09-07" # Placeholder
+            appointment_time = "09:00" # Placeholder
+
+            if not all([patient_name, dob, insurance_provider, policy_number, specialty, location]):
+                response_text = "I'm missing some information to complete your booking. Please provide all details."
+            else:
+                cost_details = calculate_appointment_cost(insurance_provider)
+                
+                # Check if the patient exists in mock data to get email
+                patient_data = MOCK_PATIENTS.get(patient_name.split(' ')[0])
+                if patient_data:
+                    booking_details = {
+                        "bookingId": str(uuid.uuid4()),
+                        "bookingType": "appointment",
+                        "doctorName": doctor_name,
+                        "specialty": specialty,
+                        "appointmentDate": appointment_date_param,
+                        "appointmentTime": appointment_time,
+                        "costBreakdown": cost_details,
+                        "status": "confirmed"
+                    }
+                    send_email_to_patient(patient_data['email'], booking_details)
+                    
+                    response_text = f"Success! Your booking has been confirmed with {doctor_name}. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
+                else:
+                    response_text = "I could not find a patient with the provided details to confirm your booking. Please check your information."
+
+        except Exception as e:
+            # This is the critical change.
+            # Now we are logging the full error and the traceback.
+            logging.error(f"Error during ConfirmCost process: {e}")
+            logging.error(traceback.format_exc())
+            response_text = "I am having trouble confirming your booking right now. Please try again later."
+
+
     elif tag == 'book_appointment':
         try:
             # Extract parameters for booking
@@ -374,9 +427,10 @@ def webhook():
                         response_text = f"Success! Your booking has been confirmed. An email has been sent to your registered address."
                     else:
                         response_text = "I could not complete the booking. Either the patient or doctor was not found, or the time slot is unavailable."
-        
+            
         except Exception as e:
             logging.error(f"Error during booking process: {e}")
+            logging.error(traceback.format_exc()) # <-- Log the full traceback
             response_text = "I am having trouble processing your booking right now. Please try again later."
 
     # Construct and return the Dialogflow-formatted JSON response
