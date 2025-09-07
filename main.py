@@ -209,21 +209,15 @@ def find_available_doctors(specialty, location, date_str):
     available_doctors = []
     if db:
         docs_ref = db.collection('doctors')
-        docs = docs_ref.where('specialty', '==', specialty).where('city', '==', location).stream()
+        docs = docs_ref.where(filter=firestore.FieldFilter('specialty', '==', specialty)).where(filter=firestore.FieldFilter('city', '==', location)).stream()
         for doc in docs:
             doctor_data = doc.to_dict()
             availability_map = doctor_data.get('availability', {})
             # Check if availability for the date is a list
             if date_str in availability_map and isinstance(availability_map[date_str], list):
-                # If the list is not empty, add the doctor and their times
+                # If the list is not empty, add the full doctor data
                 if availability_map[date_str]:
-                    available_times = availability_map[date_str]
-                    available_doctors.append({
-                        'name': doctor_data.get('name'),
-                        'times': available_times,
-                        'date': date_str,
-                        'bio': doctor_data.get('bio')
-                    })
+                    available_doctors.append(doctor_data)
             else:
                 logging.warning(f"Skipping doctor {doctor_data.get('name')} due to invalid availability data for date {date_str}. Expected a list of strings.")
     else: # Mock data fallback
@@ -232,13 +226,7 @@ def find_available_doctors(specialty, location, date_str):
                 availability_map = doc.get('availability', {})
                 if date_str in availability_map and isinstance(availability_map[date_str], list):
                     if availability_map[date_str]:
-                        available_times = availability_map[date_str]
-                        available_doctors.append({
-                            'name': doc.get('name'),
-                            'times': available_times,
-                            'date': date_str,
-                            'bio': "Mock Bio"
-                        })
+                        available_doctors.append(doc)
     return available_doctors
 
 
@@ -308,9 +296,9 @@ def webhook():
                                 found_next_date = True
                                 for i, doc in enumerate(available_doctors):
                                     response_text_list.append(f"\n{i+1}. {doc['name']}, {doc['specialty']}")
-                                    response_text_list.append(f"   - Available date: {datetime.strptime(doc['date'], '%Y-%m-%d').strftime('%B %d, %Y')}")
+                                    response_text_list.append(f"   - Available date: {datetime.strptime(next_date_str, '%Y-%m-%d').strftime('%B %d, %Y')}")
                                     response_text_list.append("   - Available times:")
-                                    for time in doc['times']:
+                                    for time in doc['availability'][next_date_str]:
                                         response_text_list.append(f"     - {time}")
                                 response_text = "\n".join(response_text_list)
                                 break
@@ -321,9 +309,9 @@ def webhook():
                         response_text_list = []
                         for i, doc in enumerate(available_doctors):
                             response_text_list.append(f"\n{i+1}. {doc['name']}, {doc['specialty']}")
-                            response_text_list.append(f"   - Available date: {datetime.strptime(doc['date'], '%Y-%m-%d').strftime('%B %d, %Y')}")
+                            response_text_list.append(f"   - Available date: {datetime.strptime(date_str, '%Y-%m-%d').strftime('%B %d, %Y')}")
                             response_text_list.append("   - Available times:")
-                            for time in doc['times']:
+                            for time in doc['availability'][date_str]:
                                 response_text_list.append(f"     - {time}")
                         response_text = "\n".join(response_text_list)
                     
@@ -396,7 +384,7 @@ def webhook():
                 patient_doc_ref = None
                 if db:
                     patients_ref = db.collection('patients')
-                    patient_query = patients_ref.where('name', '==', patient_name).limit(1).stream()
+                    patient_query = patients_ref.where(filter=firestore.FieldFilter('name', '==', patient_name)).limit(1).stream()
                     for doc in patient_query:
                         patient_doc_ref = doc.reference
                         patient_data = doc.to_dict()
@@ -407,7 +395,7 @@ def webhook():
                     else:
                         doctor_doc_ref = None
                         doctors_ref = db.collection('doctors')
-                        doctor_query = doctors_ref.where('name', '==', doctor_name).limit(1).stream()
+                        doctor_query = doctors_ref.where(filter=firestore.FieldFilter('name', '==', doctor_name)).limit(1).stream()
                         for doc in doctor_query:
                             doctor_doc_ref = doc.reference
                             doctor_data = doc.to_dict()
