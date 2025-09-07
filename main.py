@@ -2,7 +2,7 @@ import os
 from flask import Flask, request, jsonify
 import firebase_admin
 from firebase_admin import credentials, firestore
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import smtplib
 import ssl
@@ -59,7 +59,7 @@ MOCK_DOCTORS = {
         'specialty': 'General Practitioner',
         'city': 'New York',
         'availability': {
-            '2025-09-07': { # Updated date for today
+            '2025-09-07': {
                 '13:00': True,
                 '14:00': True,
             }
@@ -71,12 +71,12 @@ MOCK_DOCTORS = {
         'specialty': 'General Practitioner',
         'city': 'London',
         'availability': {
-            '2025-09-07': { # Updated date for today
-                '10:00': True,
-                '11:00': False, # This slot is already booked
-                '12:00': True,
+            '2025-09-07': {
+                '10:00': False,
+                '11:00': False, 
+                '12:00': False,
             },
-             '2025-09-08': { # Adding an extra day for testing
+             '2025-09-08': {
                 '09:00': True,
                 '10:00': True,
             }
@@ -195,12 +195,48 @@ def send_email_to_patient(email: str, booking_details: dict):
         # Create a secure SSL context and a connection
         context = ssl.create_default_context()
         with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls(context=context)  # Secure the connection
+            server.starttls(context=context)
             server.login(sender_email, password)
             server.sendmail(sender_email, email, msg.as_string())
             logging.info(f"Email sent successfully via SMTP to {email}")
     except Exception as e:
         logging.error(f"Failed to send email via SMTP: {e}")
+
+
+def find_available_doctors(specialty, location, date_str):
+    """
+    Helper function to search for available doctors and their times.
+    """
+    available_doctors = []
+    if db:
+        docs_ref = db.collection('doctors')
+        docs = docs_ref.where('specialty', '==', specialty).where('city', '==', location).stream()
+        for doc in docs:
+            doctor_data = doc.to_dict()
+            availability_map = doctor_data.get('availability', {})
+            if date_str in availability_map:
+                available_times = [time for time, is_available in availability_map[date_str].items() if is_available]
+                if available_times:
+                    available_doctors.append({
+                        'name': doctor_data.get('name'),
+                        'times': ", ".join(available_times),
+                        'date': date_str,
+                        'bio': doctor_data.get('bio')
+                    })
+    else: # Mock data fallback
+        for doc in MOCK_DOCTORS.values():
+            if doc['specialty'] == specialty and doc['city'] == location:
+                availability_map = doc.get('availability', {})
+                if date_str in availability_map:
+                    available_times = [time for time, is_available in availability_map[date_str].items() if is_available]
+                    if available_times:
+                        available_doctors.append({
+                            'name': doc.get('name'),
+                            'times': ", ".join(available_times),
+                            'date': date_str,
+                            'bio': "Mock Bio"
+                        })
+    return available_doctors
 
 
 # --- Webhook Endpoints ---
@@ -232,7 +268,6 @@ def webhook():
         else:
             location = location_param
         
-        # --- NEW LOGIC: Use current date if none is provided ---
         date_param = parameters.get('date')
         if date_param:
             if isinstance(date_param, str):
@@ -255,37 +290,31 @@ def webhook():
                 if requested_date < today:
                     response_text = "I can only check for future appointments. Please provide a date that isn't in the past."
                 else:
-                    available_doctors = []
-                    if db:
-                        docs_ref = db.collection('doctors')
-                        docs = docs_ref.where('specialty', '==', specialty).where('city', '==', location).stream()
-                        for doc in docs:
-                            doctor_data = doc.to_dict()
-                            availability_map = doctor_data.get('availability', {})
-                            if date_str in availability_map:
-                                available_times = [time for time, is_available in availability_map[date_str].items() if is_available]
-                                if available_times:
-                                    available_doctors.append({
-                                        'name': doctor_data.get('name'),
-                                        'times': ", ".join(available_times)
-                                    })
-                    else: # Mock data fallback
-                        for doc in MOCK_DOCTORS.values():
-                            if doc['specialty'] == specialty and doc['city'] == location:
-                                availability_map = doc.get('availability', {})
-                                if date_str in availability_map:
-                                    available_times = [time for time, is_available in availability_map[date_str].items() if is_available]
-                                    if available_times:
-                                        available_doctors.append({
-                                            'name': doc.get('name'),
-                                            'times': ", ".join(available_times)
-                                        })
+                    # Initial search for the requested date
+                    available_doctors = find_available_doctors(specialty, location, date_str)
                     
-                    if available_doctors:
-                        doctor_list_text = " and ".join([f"{doc['name']} at {doc['times']}" for doc in available_doctors])
-                        response_text = f"I found the following doctors available on {requested_date.strftime('%B %d, %Y')}: {doctor_list_text}. Which one would you like to book with?"
+                    # If no doctors found, search for the next available date
+                    if not available_doctors:
+                        found_next_date = False
+                        for i in range(1, 8):
+                            next_date = requested_date + timedelta(days=i)
+                            next_date_str = next_date.strftime('%Y-%m-%d')
+                            available_doctors = find_available_doctors(specialty, location, next_date_str)
+                            if available_doctors:
+                                response_text = f"I could not find any appointments for {requested_date.strftime('%B %d, %Y')}. However, I found some for the next available date, which is {next_date.strftime('%B %d, %Y')}: "
+                                found_next_date = True
+                                break
+                        
+                        if not found_next_date:
+                            response_text = f"I could not find any {specialty} doctors in {location} available on or after {requested_date.strftime('%B %d, %Y')}. Would you like to check a different date or location?"
                     else:
-                        response_text = f"I could not find any {specialty} doctors in {location} available on {requested_date.strftime('%B %d, %Y')}. Would you like to check a different date or location?"
+                        response_text = f"I found the following doctors available on {requested_date.strftime('%B %d, %Y')}: "
+
+                    # Append doctor details to the response if found
+                    if available_doctors:
+                        doctor_list_text = " and ".join([f"{doc['name']} has openings at {doc['times']}." for doc in available_doctors])
+                        response_text += f"{doctor_list_text} Which one would you like to book with?"
+                    
             except Exception as e:
                 logging.error(f"Error searching for doctors: {e}")
                 logging.error(traceback.format_exc())
