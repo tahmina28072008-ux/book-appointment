@@ -52,6 +52,7 @@ MOCK_PATIENTS = {
     }
 }
 
+# The mock doctor data has been updated to match the user's data structure
 MOCK_DOCTORS = {
     'gp-001': {
         'id': 'gp-001',
@@ -59,10 +60,10 @@ MOCK_DOCTORS = {
         'specialty': 'General Practitioner',
         'city': 'New York',
         'availability': {
-            '2025-09-07': {
-                '13:00': True,
-                '14:00': True,
-            }
+            '2025-09-07': [
+                "13:00",
+                "14:00"
+            ]
         }
     },
     'gp-002': {
@@ -71,15 +72,11 @@ MOCK_DOCTORS = {
         'specialty': 'General Practitioner',
         'city': 'London',
         'availability': {
-            '2025-09-07': {
-                '10:00': False,
-                '11:00': False, 
-                '12:00': False,
-            },
-             '2025-09-08': {
-                '09:00': True,
-                '10:00': True,
-            }
+            '2025-09-07': [],
+             '2025-09-08': [
+                "09:00",
+                "10:00"
+            ]
         }
     }
 }
@@ -206,6 +203,8 @@ def send_email_to_patient(email: str, booking_details: dict):
 def find_available_doctors(specialty, location, date_str):
     """
     Helper function to search for available doctors and their times.
+    This version of the function is updated to handle the user's Firestore data structure,
+    where availability is a map of dates to arrays of time strings.
     """
     available_doctors = []
     if db:
@@ -214,10 +213,11 @@ def find_available_doctors(specialty, location, date_str):
         for doc in docs:
             doctor_data = doc.to_dict()
             availability_map = doctor_data.get('availability', {})
-            # Add a check to ensure availability for the date is a dict
-            if date_str in availability_map and isinstance(availability_map[date_str], dict):
-                available_times = [time for time, is_available in availability_map[date_str].items() if is_available]
-                if available_times:
+            # Check if availability for the date is a list
+            if date_str in availability_map and isinstance(availability_map[date_str], list):
+                # If the list is not empty, add the doctor and their times
+                if availability_map[date_str]:
+                    available_times = availability_map[date_str]
                     available_doctors.append({
                         'name': doctor_data.get('name'),
                         'times': ", ".join(available_times),
@@ -225,14 +225,14 @@ def find_available_doctors(specialty, location, date_str):
                         'bio': doctor_data.get('bio')
                     })
             else:
-                logging.warning(f"Skipping doctor {doctor_data.get('name')} due to invalid availability data for date {date_str}.")
+                logging.warning(f"Skipping doctor {doctor_data.get('name')} due to invalid availability data for date {date_str}. Expected a list of strings.")
     else: # Mock data fallback
         for doc in MOCK_DOCTORS.values():
             if doc['specialty'] == specialty and doc['city'] == location:
                 availability_map = doc.get('availability', {})
-                if date_str in availability_map:
-                    available_times = [time for time, is_available in availability_map[date_str].items() if is_available]
-                    if available_times:
+                if date_str in availability_map and isinstance(availability_map[date_str], list):
+                    if availability_map[date_str]:
+                        available_times = availability_map[date_str]
                         available_doctors.append({
                             'name': doc.get('name'),
                             'times': ", ".join(available_times),
@@ -407,7 +407,9 @@ def webhook():
                         if not doctor_doc_ref:
                             response_text = "The doctor you selected could not be found."
                         else:
-                            if doctor_data.get('availability', {}).get(appointment_date, {}).get(appointment_time):
+                            # Check if the time slot is a string within the availability array
+                            availability_list = doctor_data.get('availability', {}).get(appointment_date, [])
+                            if appointment_time in availability_list:
                                 cost_details = calculate_appointment_cost(insurance_provider)
                                 booking_details = {
                                     "bookingId": str(uuid.uuid4()),
@@ -420,9 +422,11 @@ def webhook():
                                     "status": "confirmed",
                                     "createdAt": firestore.SERVER_TIMESTAMP
                                 }
-
-                                update_path = f"availability.{appointment_date}.{appointment_time}"
-                                doctor_doc_ref.update({update_path: False})
+                                
+                                # Remove the booked time from the array
+                                availability_list.remove(appointment_time)
+                                update_path = f"availability.{appointment_date}"
+                                doctor_doc_ref.update({update_path: availability_list})
 
                                 current_bookings = patient_data.get('bookings', [])
                                 current_bookings.append(booking_details)
@@ -438,7 +442,7 @@ def webhook():
                 else:
                     patient_data = MOCK_PATIENTS.get(patient_name)
                     doctor_data = MOCK_DOCTORS.get('gp-001')
-                    if patient_data and doctor_data and doctor_data['availability'].get(appointment_date, {}).get(appointment_time):
+                    if patient_data and doctor_data and appointment_time in doctor_data['availability'].get(appointment_date, []):
                         cost_details = calculate_appointment_cost(insurance_provider)
                         booking_details = {
                                 "bookingId": str(uuid.uuid4()),
@@ -451,7 +455,7 @@ def webhook():
                                 "status": "confirmed"
                             }
                         
-                        doctor_data['availability'][appointment_date][appointment_time] = False
+                        doctor_data['availability'][appointment_date].remove(appointment_time)
                         patient_data['bookings'].append(booking_details)
                         send_email_to_patient(patient_data['email'], booking_details)
                         response_text = f"Success! Your booking has been confirmed. An email has been sent to your registered address."
