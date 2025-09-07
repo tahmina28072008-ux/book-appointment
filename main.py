@@ -220,7 +220,7 @@ def find_available_doctors(specialty, location, date_str):
                     available_times = availability_map[date_str]
                     available_doctors.append({
                         'name': doctor_data.get('name'),
-                        'times': ", ".join(available_times),
+                        'times': available_times,
                         'date': date_str,
                         'bio': doctor_data.get('bio')
                     })
@@ -235,7 +235,7 @@ def find_available_doctors(specialty, location, date_str):
                         available_times = availability_map[date_str]
                         available_doctors.append({
                             'name': doc.get('name'),
-                            'times': ", ".join(available_times),
+                            'times': available_times,
                             'date': date_str,
                             'bio': "Mock Bio"
                         })
@@ -304,12 +304,14 @@ def webhook():
                             next_date_str = next_date.strftime('%Y-%m-%d')
                             available_doctors = find_available_doctors(specialty, location, next_date_str)
                             if available_doctors:
-                                response_text_list = []
+                                response_text_list = ["I couldn't find any appointments for your requested date. However, I found some for the next available date, which is {}.".format(next_date.strftime('%B %d, %Y'))]
                                 found_next_date = True
                                 for i, doc in enumerate(available_doctors):
-                                    response_text_list.append(f"{i+1}. {doc['name']}")
-                                    response_text_list.append(f"   Available date: {datetime.strptime(doc['date'], '%Y-%m-%d').strftime('%B %d, %Y')}")
-                                    response_text_list.append(f"   Available times: {doc['times']}")
+                                    response_text_list.append(f"\n{i+1}. {doc['name']}, {doc['specialty']}")
+                                    response_text_list.append(f"   - Available date: {datetime.strptime(doc['date'], '%Y-%m-%d').strftime('%B %d, %Y')}")
+                                    response_text_list.append("   - Available times:")
+                                    for time in doc['times']:
+                                        response_text_list.append(f"     - {time}")
                                 response_text = "\n".join(response_text_list)
                                 break
                         
@@ -318,9 +320,11 @@ def webhook():
                     else:
                         response_text_list = []
                         for i, doc in enumerate(available_doctors):
-                            response_text_list.append(f"{i+1}. {doc['name']}")
-                            response_text_list.append(f"   Available date: {datetime.strptime(doc['date'], '%Y-%m-%d').strftime('%B %d, %Y')}")
-                            response_text_list.append(f"   Available times: {doc['times']}")
+                            response_text_list.append(f"\n{i+1}. {doc['name']}, {doc['specialty']}")
+                            response_text_list.append(f"   - Available date: {datetime.strptime(doc['date'], '%Y-%m-%d').strftime('%B %d, %Y')}")
+                            response_text_list.append("   - Available times:")
+                            for time in doc['times']:
+                                response_text_list.append(f"     - {time}")
                         response_text = "\n".join(response_text_list)
                     
             except Exception as e:
