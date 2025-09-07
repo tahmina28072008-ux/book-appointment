@@ -214,7 +214,8 @@ def find_available_doctors(specialty, location, date_str):
         for doc in docs:
             doctor_data = doc.to_dict()
             availability_map = doctor_data.get('availability', {})
-            if date_str in availability_map:
+            # Add a check to ensure availability for the date is a dict
+            if date_str in availability_map and isinstance(availability_map[date_str], dict):
                 available_times = [time for time, is_available in availability_map[date_str].items() if is_available]
                 if available_times:
                     available_doctors.append({
@@ -223,6 +224,8 @@ def find_available_doctors(specialty, location, date_str):
                         'date': date_str,
                         'bio': doctor_data.get('bio')
                     })
+            else:
+                logging.warning(f"Skipping doctor {doctor_data.get('name')} due to invalid availability data for date {date_str}.")
     else: # Mock data fallback
         for doc in MOCK_DOCTORS.values():
             if doc['specialty'] == specialty and doc['city'] == location:
