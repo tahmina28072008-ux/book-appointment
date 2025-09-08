@@ -43,8 +43,9 @@ except ValueError:
 
 # Mock data for demonstration if Firebase is not connected
 MOCK_PATIENTS = {
-    'Tahmina': {
+    'Tahmina Akhtar': { # Changed key to full name
         'name': 'Tahmina',
+        'surname': 'Akhtar',
         'dateOfBirth': '1992-03-12',
         'insuranceProvider': 'MedStar Health',
         'policyNumber': 'D123456',
@@ -308,7 +309,7 @@ def webhook():
                                         response_text_list.append(f"      - {time}")
                                 response_text = "\n".join(response_text_list)
                                 break
-                        
+                    
                         if not found_next_date:
                             response_text = f"I could not find any {specialty} doctors in {location} available on or after {requested_date_obj.strftime('%B %d, %Y')}. Would you like to check a different date or location?"
                     else:
@@ -388,7 +389,8 @@ def webhook():
             else:
                 cost_details = calculate_appointment_cost(insurance_provider)
                 
-                patient_data = MOCK_PATIENTS.get(patient_name_param.get('name'))
+                # Fixed the mock data lookup to use the full name as the key
+                patient_data = MOCK_PATIENTS.get(patient_name_param.get('original'))
                 if patient_data:
                     booking_details = {
                         "bookingId": str(uuid.uuid4()),
@@ -430,12 +432,19 @@ def webhook():
                 appointment_date = f"{appointment_date_param['year']}-{appointment_date_param['month']}-{appointment_date_param['day']}"
                 appointment_time = f"{appointment_time_param['hours']}:{appointment_time_param['minutes']}"
                 doctor_name = doctor_name_param['original']
-                patient_name = patient_name_param['name']
+                patient_full_name = patient_name_param['original']
+                
+                # FIX: Split the full name into first and last name to match the Firestore schema
+                name_parts = patient_full_name.split(' ', 1)
+                first_name = name_parts[0]
+                last_name = name_parts[1] if len(name_parts) > 1 else ''
 
                 patient_doc_ref = None
                 if db:
                     patients_ref = db.collection('patients')
-                    patient_query = patients_ref.where(filter=firestore.FieldFilter('name', '==', patient_name)).limit(1).stream()
+                    # FIX: Query using both name and surname fields
+                    patient_query = patients_ref.where(filter=firestore.FieldFilter('name', '==', first_name)).where(filter=firestore.FieldFilter('surname', '==', last_name)).limit(1).stream()
+                    
                     for doc in patient_query:
                         patient_doc_ref = doc.reference
                         patient_data = doc.to_dict()
@@ -488,7 +497,7 @@ def webhook():
                             else:
                                 response_text = "I'm sorry, that time slot is no longer available. Please select a different time."
                 else:
-                    patient_data = MOCK_PATIENTS.get(patient_name)
+                    patient_data = MOCK_PATIENTS.get(patient_full_name)
                     doctor_data = MOCK_DOCTORS.get('gp-002') # Using gp-002 for London as per user's flow
                     if patient_data and doctor_data and appointment_time in doctor_data['availability'].get(appointment_date, []):
                         cost_details = calculate_appointment_cost(insurance_provider)
