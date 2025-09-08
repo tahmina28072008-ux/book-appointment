@@ -374,46 +374,21 @@ def webhook():
     elif tag == 'ConfirmCost':
         try:
             # Correctly retrieve parameters from the request payload
-            # The parameter names now match what Dialogflow sends
-            patient_name_param = parameters.get('name')
-            dob_param = parameters.get('dateofbirth')
             insurance_provider = parameters.get('insuranceprovider')
-            policy_number = parameters.get('policynumber')
-            specialty = parameters.get('specialty')
-            location = parameters.get('location')
-            doctor_name = parameters.get('doctor_name')
-            appointment_date_param = parameters.get('appointment_date')
-            appointment_time = parameters.get('appointment_time')
-
-            if not all([patient_name_param, dob_param, insurance_provider, policy_number, specialty, location, doctor_name, appointment_date_param, appointment_time]):
-                response_text = "I'm missing some information to complete your booking. Please provide all details."
+            
+            if not insurance_provider:
+                response_text = "I'm missing your insurance provider information to calculate the cost. Please provide it."
             else:
                 cost_details = calculate_appointment_cost(insurance_provider)
+                total_cost = cost_details['totalCost']
+                patient_copay = cost_details['patientCopay']
                 
-                # Fixed the mock data lookup to use the full name as the key
-                patient_data = MOCK_PATIENTS.get(patient_name_param.get('original'))
-                if patient_data:
-                    booking_details = {
-                        "bookingId": str(uuid.uuid4()),
-                        "bookingType": "appointment",
-                        "doctorName": doctor_name['original'],
-                        "specialty": specialty,
-                        "appointmentDate": f"{appointment_date_param['year']}-{appointment_date_param['month']}-{appointment_date_param['day']}",
-                        "appointmentTime": f"{appointment_time['hours']}:{appointment_time['minutes']}",
-                        "costBreakdown": cost_details,
-                        "status": "confirmed"
-                    }
-                    send_email_to_patient(patient_data['email'], booking_details)
-                    
-                    response_text = f"Success! Your booking has been confirmed with {doctor_name['original']}. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
-                else:
-                    response_text = "I could not find a patient with the provided details to confirm your booking. Please check your information."
-
+                response_text = f"The total cost for this appointment is ${total_cost:.2f} with a patient co-pay of ${patient_copay:.2f}. Would you like to confirm this booking?"
+                
         except Exception as e:
             logging.error(f"Error during ConfirmCost process: {e}")
             logging.error(traceback.format_exc())
-            response_text = "I am having trouble confirming your booking right now. Please try again later."
-
+            response_text = "I am having trouble calculating the cost right now. Please try again later."
 
     elif tag == 'book_appointment':
         try:
@@ -508,7 +483,7 @@ def webhook():
                                     if patient_email:
                                         send_email_to_patient(patient_email, booking_details)
 
-                                    response_text = f"Success! Your booking has been confirmed. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
+                                    response_text = f"Success! Your booking has been confirmed with {doctor_name}. An email has been sent to your registered address."
                                 except ValueError as e:
                                     response_text = "I'm sorry, that time slot is no longer available. Please select a different time."
                                 except Exception as e:
@@ -518,6 +493,7 @@ def webhook():
                             else:
                                 response_text = "I'm sorry, that time slot is no longer available. Please select a different time."
                 else:
+                    # Mock data logic for booking
                     patient_data = MOCK_PATIENTS.get(patient_full_name)
                     doctor_data = MOCK_DOCTORS.get('gp-002') # Using gp-002 for London as per user's flow
                     if patient_data and doctor_data and appointment_time in doctor_data['availability'].get(appointment_date, []):
@@ -536,7 +512,7 @@ def webhook():
                         doctor_data['availability'][appointment_date].remove(appointment_time)
                         patient_data['bookings'].append(booking_details)
                         send_email_to_patient(patient_data['email'], booking_details)
-                        response_text = f"Success! Your booking has been confirmed. An email has been sent to your registered address."
+                        response_text = f"Success! Your booking has been confirmed with {doctor_name}. An email has been sent to your registered address."
                     else:
                         response_text = "I could not complete the booking. Either the patient or doctor was not found, or the time slot is unavailable."
             
