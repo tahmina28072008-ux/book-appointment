@@ -76,7 +76,10 @@ MOCK_DOCTORS = {
             '2025-09-07': [],
             '2025-09-08': [
                 "09:00",
-                "10:00"
+                "10:00",
+                "11:00",
+                "12:00",
+                "13:00"
             ]
         }
     }
@@ -305,7 +308,7 @@ def webhook():
                                         response_text_list.append(f"      - {time}")
                                 response_text = "\n".join(response_text_list)
                                 break
-                    
+                        
                         if not found_next_date:
                             response_text = f"I could not find any {specialty} doctors in {location} available on or after {requested_date_obj.strftime('%B %d, %Y')}. Would you like to check a different date or location?"
                     else:
@@ -329,15 +332,18 @@ def webhook():
             # Capture the parameters from the user's previous selection
             doctor_name = parameters.get('doctor_name')
             appointment_time = parameters.get('appointment_time')
+            # Now correctly pass appointment_date as a custom payload
+            appointment_date = parameters.get('appointment_date')
 
-            if not doctor_name or not appointment_time:
+            if not doctor_name or not appointment_time or not appointment_date:
                 response_text = "I'm sorry, I seem to have lost the appointment details. Please try selecting a time again."
             else:
                 # A custom payload is used to pass data to a rich UI in Dialogflow.
                 # The client-side UI for 'CollectPatientInfo' can read this data to pre-populate fields.
                 custom_payload = {
                     "doctorName": doctor_name,
-                    "appointmentTime": appointment_time
+                    "appointmentTime": appointment_time,
+                    "appointmentDate": appointment_date
                 }
                 
                 # The fulfillment response will contain the custom payload
@@ -347,7 +353,7 @@ def webhook():
                         'messages': [
                             {
                                 'text': {
-                                    'text': ["Please provide your personal and insurance details to complete the booking."]
+                                    'text': ["You're booking with " + doctor_name['original'] + " on " + appointment_date['year'] + "/" + appointment_date['month'] + "/" + appointment_date['day'] + " at " + appointment_time['hours'] + ":" + appointment_time['minutes'] + ". Let's collect your details.\n" + "Please provide your personal and insurance details to complete the booking."]
                                 }
                             },
                             {
@@ -366,36 +372,37 @@ def webhook():
     elif tag == 'ConfirmCost':
         try:
             # Correctly retrieve parameters from the request payload
-            patient_name = parameters.get('name')
-            dob = parameters.get('dateofbirth')
+            # The parameter names now match what Dialogflow sends
+            patient_name_param = parameters.get('name')
+            dob_param = parameters.get('dateofbirth')
             insurance_provider = parameters.get('insuranceprovider')
             policy_number = parameters.get('policynumber')
             specialty = parameters.get('specialty')
             location = parameters.get('location')
-            doctor_name = parameters.get('doctor_name') # Now correctly retrieved from parameters
-            appointment_date_param = parameters.get('date')
-            appointment_time = parameters.get('appointment_time') # Now correctly retrieved from parameters
+            doctor_name = parameters.get('doctor_name')
+            appointment_date_param = parameters.get('appointment_date')
+            appointment_time = parameters.get('appointment_time')
 
-            if not all([patient_name, dob, insurance_provider, policy_number, specialty, location, doctor_name, appointment_date_param, appointment_time]):
+            if not all([patient_name_param, dob_param, insurance_provider, policy_number, specialty, location, doctor_name, appointment_date_param, appointment_time]):
                 response_text = "I'm missing some information to complete your booking. Please provide all details."
             else:
                 cost_details = calculate_appointment_cost(insurance_provider)
                 
-                patient_data = MOCK_PATIENTS.get(patient_name.split(' ')[0])
+                patient_data = MOCK_PATIENTS.get(patient_name_param.get('name'))
                 if patient_data:
                     booking_details = {
                         "bookingId": str(uuid.uuid4()),
                         "bookingType": "appointment",
-                        "doctorName": doctor_name,
+                        "doctorName": doctor_name['original'],
                         "specialty": specialty,
-                        "appointmentDate": appointment_date_param,
-                        "appointmentTime": appointment_time,
+                        "appointmentDate": f"{appointment_date_param['year']}-{appointment_date_param['month']}-{appointment_date_param['day']}",
+                        "appointmentTime": f"{appointment_time['hours']}:{appointment_time['minutes']}",
                         "costBreakdown": cost_details,
                         "status": "confirmed"
                     }
                     send_email_to_patient(patient_data['email'], booking_details)
                     
-                    response_text = f"Success! Your booking has been confirmed with {doctor_name}. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
+                    response_text = f"Success! Your booking has been confirmed with {doctor_name['original']}. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
                 else:
                     response_text = "I could not find a patient with the provided details to confirm your booking. Please check your information."
 
@@ -407,23 +414,24 @@ def webhook():
 
     elif tag == 'book_appointment':
         try:
-            patient_name = parameters.get('patient_name')
-            dob = parameters.get('dob')
-            insurance_provider = parameters.get('insurance_provider')
-            policy_number = parameters.get('policy_number')
+            # Corrected parameter names to match Dialogflow's sessionInfo
+            patient_name_param = parameters.get('name')
+            dob_param = parameters.get('dateofbirth')
+            insurance_provider = parameters.get('insuranceprovider')
+            policy_number = parameters.get('policynumber')
             specialty = parameters.get('specialty')
-            doctor_name = parameters.get('doctor_name')
+            doctor_name_param = parameters.get('doctor_name')
             appointment_date_param = parameters.get('appointment_date')
-            appointment_time = parameters.get('appointment_time')
+            appointment_time_param = parameters.get('appointment_time')
 
-            if isinstance(appointment_date_param, dict):
-                appointment_date = appointment_date_param.get('date_time', '').split('T')[0]
-            else:
-                appointment_date = appointment_date_param.split('T')[0]
-
-            if not all([patient_name, dob, insurance_provider, policy_number, specialty, doctor_name, appointment_date, appointment_time]):
+            if not all([patient_name_param, dob_param, insurance_provider, policy_number, specialty, doctor_name_param, appointment_date_param, appointment_time_param]):
                 response_text = "I'm missing some information to complete your booking. Please provide all details."
             else:
+                appointment_date = f"{appointment_date_param['year']}-{appointment_date_param['month']}-{appointment_date_param['day']}"
+                appointment_time = f"{appointment_time_param['hours']}:{appointment_time_param['minutes']}"
+                doctor_name = doctor_name_param['original']
+                patient_name = patient_name_param['name']
+
                 patient_doc_ref = None
                 if db:
                     patients_ref = db.collection('patients')
@@ -481,7 +489,7 @@ def webhook():
                                 response_text = "I'm sorry, that time slot is no longer available. Please select a different time."
                 else:
                     patient_data = MOCK_PATIENTS.get(patient_name)
-                    doctor_data = MOCK_DOCTORS.get('gp-001')
+                    doctor_data = MOCK_DOCTORS.get('gp-002') # Using gp-002 for London as per user's flow
                     if patient_data and doctor_data and appointment_time in doctor_data['availability'].get(appointment_date, []):
                         cost_details = calculate_appointment_cost(insurance_provider)
                         booking_details = {
