@@ -11,6 +11,7 @@ from email.mime.multipart import MIMEMultipart
 import traceback
 import uuid
 import pytz
+from google.cloud import firestore as google_firestore
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -443,7 +444,7 @@ def webhook():
                 if db:
                     patients_ref = db.collection('patients')
                     # FIX: Query using both name and surname fields
-                    patient_query = patients_ref.where(filter=firestore.FieldFilter('name', '==', first_name)).where(filter=firestore.FieldFilter('surname', '==', last_name)).limit(1).stream()
+                    patient_query = patients_ref.where(filter=google_firestore.FieldFilter('name', '==', first_name)).where(filter=google_firestore.FieldFilter('surname', '==', last_name)).limit(1).stream()
                     
                     for doc in patient_query:
                         patient_doc_ref = doc.reference
@@ -455,7 +456,7 @@ def webhook():
                     else:
                         doctor_doc_ref = None
                         doctors_ref = db.collection('doctors')
-                        doctor_query = doctors_ref.where(filter=firestore.FieldFilter('name', '==', doctor_name)).limit(1).stream()
+                        doctor_query = doctors_ref.where(filter=google_firestore.FieldFilter('name', '==', doctor_name)).limit(1).stream()
                         for doc in doctor_query:
                             doctor_doc_ref = doc.reference
                             doctor_data = doc.to_dict()
@@ -480,20 +481,40 @@ def webhook():
                                     "createdAt": firestore.SERVER_TIMESTAMP
                                 }
                                 
-                                # Remove the booked time from the array
-                                availability_list.remove(appointment_time)
-                                update_path = f"availability.{appointment_date}"
-                                doctor_doc_ref.update({update_path: availability_list})
+                                # Use a transaction to ensure atomic updates
+                                @google_firestore.transactional
+                                def update_patient_and_doctor_in_transaction(transaction, patient_ref, doctor_ref, booking_info):
+                                    snapshot = patient_ref.get(transaction=transaction)
+                                    current_bookings = snapshot.to_dict().get('bookings', [])
+                                    current_bookings.append(booking_info)
+                                    transaction.update(patient_ref, {'bookings': current_bookings})
+                                    
+                                    doctor_snapshot = doctor_ref.get(transaction=transaction)
+                                    doctor_data_trans = doctor_snapshot.to_dict()
+                                    availability_list_trans = doctor_data_trans.get('availability', {}).get(appointment_date, [])
+                                    
+                                    if booking_info['appointmentTime'] in availability_list_trans:
+                                        availability_list_trans.remove(booking_info['appointmentTime'])
+                                        update_path = f"availability.{appointment_date}"
+                                        transaction.update(doctor_ref, {update_path: availability_list_trans})
+                                    else:
+                                        raise ValueError("Time slot is no longer available.")
+                                        
+                                transaction = db.transaction()
+                                try:
+                                    update_patient_and_doctor_in_transaction(transaction, patient_doc_ref, doctor_doc_ref, booking_details)
+                                    
+                                    patient_email = patient_data.get('email')
+                                    if patient_email:
+                                        send_email_to_patient(patient_email, booking_details)
 
-                                current_bookings = patient_data.get('bookings', [])
-                                current_bookings.append(booking_details)
-                                patient_doc_ref.update({'bookings': current_bookings})
-
-                                patient_email = patient_data.get('email')
-                                if patient_email:
-                                    send_email_to_patient(patient_email, booking_details)
-
-                                response_text = f"Success! Your booking has been confirmed. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
+                                    response_text = f"Success! Your booking has been confirmed. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
+                                except ValueError as e:
+                                    response_text = "I'm sorry, that time slot is no longer available. Please select a different time."
+                                except Exception as e:
+                                    logging.error(f"Transaction failed: {e}")
+                                    logging.error(traceback.format_exc())
+                                    response_text = "An error occurred during the booking process. Please try again."
                             else:
                                 response_text = "I'm sorry, that time slot is no longer available. Please select a different time."
                 else:
