@@ -353,7 +353,7 @@ def webhook():
                         'messages': [
                             {
                                 'text': {
-                                    'text': ["You're booking with " + doctor_name['original'] + " on " + appointment_date['year'] + "/" + appointment_date['month'] + "/" + appointment_date['day'] + " at " + appointment_time['hours'] + ":" + appointment_time['minutes'] + ". Let's collect your details.\n" + "Please provide your personal and insurance details to complete the booking."]
+                                    'text': ["You're booking with " + doctor_name['original'] + " on " + str(int(appointment_date['year'])) + "/" + str(int(appointment_date['month'])) + "/" + str(int(appointment_date['day'])) + " at " + str(int(appointment_time['hours'])) + ":" + str(int(appointment_time['minutes'])) + ". Let's collect your details.\n" + "Please provide your personal and insurance details to complete the booking."]
                                 }
                             },
                             {
