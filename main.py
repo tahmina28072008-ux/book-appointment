@@ -74,7 +74,7 @@ MOCK_DOCTORS = {
         'city': 'London',
         'availability': {
             '2025-09-07': [],
-             '2025-09-08': [
+            '2025-09-08': [
                 "09:00",
                 "10:00"
             ]
@@ -323,20 +323,60 @@ def webhook():
                 logging.error(traceback.format_exc())
                 response_text = "I am having trouble looking for doctors right now. Please try again later."
     
+    # --- New Fulfillment Tag to Pass Parameters to the Patient Info Collection UI ---
+    elif tag == 'collect_patient_info':
+        try:
+            # Capture the parameters from the user's previous selection
+            doctor_name = parameters.get('doctor_name')
+            appointment_time = parameters.get('appointment_time')
+
+            if not doctor_name or not appointment_time:
+                response_text = "I'm sorry, I seem to have lost the appointment details. Please try selecting a time again."
+            else:
+                # A custom payload is used to pass data to a rich UI in Dialogflow.
+                # The client-side UI for 'CollectPatientInfo' can read this data to pre-populate fields.
+                custom_payload = {
+                    "doctorName": doctor_name,
+                    "appointmentTime": appointment_time
+                }
+                
+                # The fulfillment response will contain the custom payload
+                # and a generic text prompt for the next step.
+                return jsonify({
+                    'fulfillmentResponse': {
+                        'messages': [
+                            {
+                                'text': {
+                                    'text': ["Please provide your personal and insurance details to complete the booking."]
+                                }
+                            },
+                            {
+                                'payload': {
+                                    'customPayload': custom_payload
+                                }
+                            }
+                        ]
+                    }
+                })
+        except Exception as e:
+            logging.error(f"Error in collect_patient_info: {e}")
+            logging.error(traceback.format_exc())
+            response_text = "I am having trouble with the next step. Please try again later."
+    
     elif tag == 'ConfirmCost':
         try:
-            patient_name = parameters.get('name', {}).get('name')
+            # Correctly retrieve parameters from the request payload
+            patient_name = parameters.get('name')
             dob = parameters.get('dateofbirth')
             insurance_provider = parameters.get('insuranceprovider')
             policy_number = parameters.get('policynumber')
             specialty = parameters.get('specialty')
             location = parameters.get('location')
-            
-            doctor_name = "Dr. Tahmina Akhtar"
-            appointment_date_param = "2025-09-07"
-            appointment_time = "09:00"
+            doctor_name = parameters.get('doctor_name') # Now correctly retrieved from parameters
+            appointment_date_param = parameters.get('date')
+            appointment_time = parameters.get('appointment_time') # Now correctly retrieved from parameters
 
-            if not all([patient_name, dob, insurance_provider, policy_number, specialty, location]):
+            if not all([patient_name, dob, insurance_provider, policy_number, specialty, location, doctor_name, appointment_date_param, appointment_time]):
                 response_text = "I'm missing some information to complete your booking. Please provide all details."
             else:
                 cost_details = calculate_appointment_cost(insurance_provider)
