@@ -110,6 +110,7 @@ def send_email_to_patient(email: str, patient_name: str, booking_details: dict):
     total_cost = cost_breakdown.get('totalCost', 0)
     patient_copay = cost_breakdown.get('patientCopay', 0)
 
+    # Plain text
     text_content = f"""
 Hello {patient_name},
 
@@ -126,6 +127,7 @@ Patient Co-pay: ${patient_copay:.2f}
 Thank you for using our service!
 """
 
+    # HTML email
     html_content = f"""
 <html><body>
 <h2>Hello {patient_name},</h2>
@@ -198,7 +200,7 @@ def webhook():
 
     elif tag == 'collect_patient_info':
         patient_name = parameters.get('name')
-        patient_full_name = patient_name.get('original')
+        patient_full_name = patient_name.get('original') if patient_name else None
         patient_surname = parameters.get('surname')
         patient_dob = parameters.get('date-of-birth')
         patient_email = parameters.get('email')
@@ -206,8 +208,6 @@ def webhook():
         if not patient_full_name or not patient_surname or not patient_dob or not patient_email:
             response_text = "I'm missing some patient information. Please provide your full name, date of birth, and email."
         else:
-            # Here you would typically save the data to the database
-            # For now, we'll just confirm we've collected it.
             response_text = f"Thank you, {patient_full_name}. I have collected your information. What is your insurance provider? We will use this to estimate the appointment cost."
 
     elif tag == 'ConfirmCost':
@@ -228,10 +228,9 @@ def webhook():
                 "Do you want to proceed with this booking?"
             )
 
-    # --- Book Appointment Example ---
     elif tag == 'book_appointment':
         patient_name_param = parameters.get('name')
-        patient_full_name = patient_name_param['original']
+        patient_full_name = patient_name_param['original'] if patient_name_param else None
         patient_data = MOCK_PATIENTS.get(patient_full_name)
         doctor_name = parameters.get('doctor_name')['original']
         appointment_date_param = parameters.get('appointment_date')
@@ -243,7 +242,6 @@ def webhook():
 
         doctor_data = next((doc for doc in MOCK_DOCTORS.values() if doc['name'] == doctor_name), None)
         if doctor_data and patient_data:
-            # Remove booked time
             if appointment_time in doctor_data['availability'].get(appointment_date, []):
                 doctor_data['availability'][appointment_date].remove(appointment_time)
                 cost_details = calculate_appointment_cost(insurance_provider)
