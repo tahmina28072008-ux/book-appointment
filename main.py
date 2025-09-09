@@ -204,34 +204,41 @@ def send_email_to_patient(email: str, booking_details: dict):
         logging.error(f"Failed to send email via SMTP: {e}")
 
 
-def find_available_doctors(specialty, location, date_str):
+def find_available_doctors(specialty, location, date_str=None):
     """
-    Helper function to search for available doctors and their times on a specific date.
-    This version of the function is updated to handle the user's Firestore data structure,
-    where availability is a map of dates to arrays of time strings.
+    Fetch doctors by specialty & location. Returns all availability.
+    Doctors are sorted by earliest available date.
     """
     available_doctors = []
     if db:
         docs_ref = db.collection('doctors')
-        docs = docs_ref.where(filter=firestore.FieldFilter('specialty', '==', specialty)).where(filter=firestore.FieldFilter('city', '==', location)).stream()
+        docs = docs_ref.where(
+            filter=firestore.FieldFilter('specialty', '==', specialty.title())
+        ).where(
+            filter=firestore.FieldFilter('city', '==', location.title())
+        ).stream()
+
         for doc in docs:
             doctor_data = doc.to_dict()
             availability_map = doctor_data.get('availability', {})
-            # Check if availability for the date is a list
-            if date_str in availability_map and isinstance(availability_map[date_str], list):
-                # If the list is not empty, add the full doctor data
-                if availability_map[date_str]:
-                    available_doctors.append(doctor_data)
-            else:
-                logging.warning(f"Skipping doctor {doctor_data.get('name')} due to invalid availability data for date {date_str}. Expected a list of strings.")
-    else: # Mock data fallback
+            valid_dates = [datetime.strptime(d, "%Y-%m-%d").date() for d, times in availability_map.items() if times]
+            if valid_dates:
+                earliest_date = min(valid_dates)
+                doctor_data['earliest_date'] = earliest_date
+                available_doctors.append(doctor_data)
+    else:
         for doc in MOCK_DOCTORS.values():
-            if doc['specialty'] == specialty and doc['city'] == location:
+            if doc['specialty'].lower() == specialty.lower() and doc['city'].lower() == location.lower():
                 availability_map = doc.get('availability', {})
-                if date_str in availability_map and isinstance(availability_map[date_str], list):
-                    if availability_map[date_str]:
-                        available_doctors.append(doc)
+                valid_dates = [datetime.strptime(d, "%Y-%m-%d").date() for d, times in availability_map.items() if times]
+                if valid_dates:
+                    earliest_date = min(valid_dates)
+                    doc['earliest_date'] = earliest_date
+                    available_doctors.append(doc)
+
+    available_doctors.sort(key=lambda d: d.get('earliest_date'))
     return available_doctors
+
 
 
 # --- Webhook Endpoints ---
