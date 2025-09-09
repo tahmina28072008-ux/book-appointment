@@ -199,12 +199,18 @@ def webhook():
         doctors = find_available_doctors(specialty, location)
         if doctors:
             response_text_list = ["I found the following doctors with availability:"]
-            custom_payload = {}
+            payload_doctors = []
 
             for doc in doctors:
+                doc_entry = {
+                    "name": doc['name'],
+                    "specialty": doc['specialty'],
+                    "city": doc['city'],
+                    "availability": doc['availability']
+                }
+                payload_doctors.append(doc_entry)
+
                 response_text_list.append(f"\nDoctor: {doc['name']} ({doc['specialty']})")
-                # Prepare payload & human-readable text
-                custom_payload[doc['name']] = doc['availability']
                 for date, times in sorted(doc['availability'].items()):
                     times_str = ', '.join(times)
                     response_text_list.append(f"  {date}: {times_str}")
@@ -213,13 +219,15 @@ def webhook():
 
             return jsonify({
                 'fulfillmentResponse': {
-                    'messages': [{'text': {'text': [response_text]}}],
-                    'mergeBehavior': 'REPLACE',
-                    'payload': {'customPayload': custom_payload}
+                    'messages': [
+                        {'text': {'text': [response_text]}},
+                        {'payload': {'availableDoctors': payload_doctors}}
+                    ]
                 }
             })
         else:
             response_text = f"No {specialty} doctors available in {location} from tomorrow onward."
+
 
 
     # --- Collect Patient Info ---
