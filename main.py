@@ -89,7 +89,10 @@ def calculate_appointment_cost(insurance_provider: str) -> dict:
         "insuranceClaim": rates["appointment_cost"] - rates["co_pay"]
     }
 
-def send_email_to_patient(email: str, booking_details: dict):
+def send_email_to_patient(email: str, patient_name: str, booking_details: dict):
+    """
+    Sends a detailed appointment confirmation email to the patient.
+    """
     smtp_server = os.environ.get('SMTP_SERVER', "smtp.gmail.com")
     smtp_port = int(os.environ.get('SMTP_PORT', 587))
     sender_email = os.environ.get('SMTP_EMAIL', "niljoshna28@gmail.com")
@@ -100,20 +103,72 @@ def send_email_to_patient(email: str, booking_details: dict):
         return
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Your Appointment Confirmation"
+    msg["Subject"] = f"Your Appointment Confirmation with {booking_details.get('doctorName')}"
     msg["From"] = sender_email
     msg["To"] = email
 
+    # Updated plain text content
     text_content = f"""
-Appointment Confirmation
-Hello,
-Your appointment has been successfully booked with {booking_details.get('doctorName')} on {booking_details.get('appointmentDate')} at {booking_details.get('appointmentTime')}.
+Dear {patient_name},
+
+Your appointment has been successfully booked. Please find the details below:
+
+Appointment Details:
+Doctor: {booking_details.get('doctorName')}
+Specialty: {booking_details.get('specialty')}
+Date: {booking_details.get('appointmentDate')}
+Time: {booking_details.get('appointmentTime')}
+
+Cost Breakdown:
+Total Cost: ${booking_details.get('costBreakdown', {}).get('totalCost'):.2f}
+Patient Co-pay: ${booking_details.get('costBreakdown', {}).get('patientCopay'):.2f}
+Insurance Claim: ${booking_details.get('costBreakdown', {}).get('insuranceClaim'):.2f}
+
+Thank you for using our service.
+
+Best regards,
+The Health Portal Team
 """
+
+    # Updated HTML content with more details and styling
     html_content = f"""
-<html><body><h2>Appointment Confirmation</h2>
-<p>Your appointment has been successfully booked with <b>{booking_details.get('doctorName')}</b> on <b>{booking_details.get('appointmentDate')}</b> at <b>{booking_details.get('appointmentTime')}</b>.</p>
-</body></html>
-"""
+    <html>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 20px auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
+            <h2 style="color: #0056b3;">Appointment Confirmation</h2>
+            <p>Dear {patient_name},</p>
+            <p>Your appointment has been successfully booked with <b>{booking_details.get('doctorName')}</b>. Below are the full details of your booking.</p>
+            
+            <h3 style="color: #0056b3;">Appointment Details</h3>
+            <ul style="list-style-type: none; padding: 0;">
+                <li><strong>Doctor:</strong> {booking_details.get('doctorName')}</li>
+                <li><strong>Specialty:</strong> {booking_details.get('specialty')}</li>
+                <li><strong>Date:</strong> {booking_details.get('appointmentDate')}</li>
+                <li><strong>Time:</strong> {booking_details.get('appointmentTime')}</li>
+            </ul>
+
+            <h3 style="color: #0056b3;">Cost Breakdown</h3>
+            <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #ddd;">Total Cost:</td>
+                    <td style="padding: 8px; border: 1px solid #ddd;">${booking_details.get('costBreakdown', {}).get('totalCost'):.2f}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #ddd;">Patient Co-pay:</td>
+                    <td style="padding: 8px; border: 1px solid #ddd;">${booking_details.get('costBreakdown', {}).get('patientCopay'):.2f}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; border: 1px solid #ddd;">Insurance Claim:</td>
+                    <td style="padding: 8px; border: 1px solid #ddd;">${booking_details.get('costBreakdown', {}).get('insuranceClaim'):.2f}</td>
+                </tr>
+            </table>
+
+            <p style="margin-top: 20px;">Thank you for using our service.</p>
+            <p>Best regards,<br>The Health Portal Team</p>
+        </div>
+    </body>
+    </html>
+    """
 
     msg.attach(MIMEText(text_content, "plain"))
     msg.attach(MIMEText(html_content, "html"))
@@ -276,9 +331,10 @@ def webhook():
             if not all([patient_name_param, dob_param, insurance_provider, policy_number, specialty, location, doctor_name, appointment_date_param, appointment_time]):
                 response_text = "I'm missing some information to complete your booking. Please provide all details."
             else:
-                cost_details = calculate_appointment_cost(insurance_provider)
-                patient_data = MOCK_PATIENTS.get(patient_name_param.get('original'))
+                patient_full_name = patient_name_param.get('original')
+                patient_data = MOCK_PATIENTS.get(patient_full_name)
                 if patient_data:
+                    cost_details = calculate_appointment_cost(insurance_provider)
                     booking_details = {
                         "bookingId": str(uuid.uuid4()),
                         "bookingType": "appointment",
@@ -289,7 +345,8 @@ def webhook():
                         "costBreakdown": cost_details,
                         "status": "confirmed"
                     }
-                    send_email_to_patient(patient_data['email'], booking_details)
+                    # Pass the patient's full name to the email function
+                    send_email_to_patient(patient_data['email'], patient_full_name, booking_details)
                     response_text = f"Success! Your booking has been confirmed with {doctor_name['original']}. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
                 else:
                     response_text = "I could not find a patient with the provided details to confirm your booking. Please check your information."
@@ -343,7 +400,8 @@ def webhook():
                                 "status": "confirmed"
                             }
                             patient_data['bookings'].append(booking_details)
-                            send_email_to_patient(patient_data['email'], booking_details)
+                            # Pass the patient's full name to the email function
+                            send_email_to_patient(patient_data['email'], patient_full_name, booking_details)
                             response_text = f"Success! Your booking with {doctor_name} on {appointment_date} at {appointment_time} has been confirmed. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
                         else:
                             response_text = "The selected time slot is not available. Please choose from the list of available times."
