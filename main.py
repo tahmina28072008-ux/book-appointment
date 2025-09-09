@@ -189,29 +189,38 @@ def webhook():
 
     # --- Search Doctors ---
     if tag == 'search_doctors':
-        specialty = parameters.get('specialty')
-        location_param = parameters.get('location')
-        location = location_param.get('city') if isinstance(location_param, dict) else location_param
+    specialty = parameters.get('specialty')
+    location_param = parameters.get('location')
+    location = location_param.get('city') if isinstance(location_param, dict) else location_param
 
-        if not specialty or not location:
-            response_text = "Please provide both specialty and location."
+    if not specialty or not location:
+        response_text = "Please provide both specialty and location."
+    else:
+        doctors = find_available_doctors(specialty, location)
+        if doctors:
+            response_text_list = ["I found the following doctors with availability:"]
+            custom_payload = {}
+
+            for doc in doctors:
+                response_text_list.append(f"\nDoctor: {doc['name']} ({doc['specialty']})")
+                # Prepare payload & human-readable text
+                custom_payload[doc['name']] = doc['availability']
+                for date, times in sorted(doc['availability'].items()):
+                    times_str = ', '.join(times)
+                    response_text_list.append(f"  {date}: {times_str}")
+
+            response_text = "\n".join(response_text_list)
+
+            return jsonify({
+                'fulfillmentResponse': {
+                    'messages': [{'text': {'text': [response_text]}}],
+                    'mergeBehavior': 'REPLACE',
+                    'payload': {'customPayload': custom_payload}
+                }
+            })
         else:
-            try:
-                doctors_list = find_available_doctors(specialty, location)
-                if doctors_list:
-                    return jsonify({
-                        'fulfillmentResponse': {
-                            'messages': [
-                                {'payload': {'doctorList': {"message": "I found the following doctors:", "doctors": doctors_list}}}
-                            ]
-                        }
-                    })
-                else:
-                    response_text = f"No {specialty} doctors found in {location} with upcoming availability."
-            except Exception as e:
-                logging.error(f"Error searching doctors: {e}")
-                logging.error(traceback.format_exc())
-                response_text = "Error looking for doctors. Please try again later."
+            response_text = f"No {specialty} doctors available in {location} from tomorrow onward."
+
 
     # --- Collect Patient Info ---
     elif tag == 'collect_patient_info':
