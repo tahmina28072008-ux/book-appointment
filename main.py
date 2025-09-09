@@ -82,14 +82,26 @@ INSURANCE_RATES = {
 
 # --- Core Business Logic Functions ---
 def calculate_appointment_cost(insurance_provider: str) -> dict:
+    """
+    Calculates the appointment cost and patient's co-pay based on insurance.
+    """
     rates = INSURANCE_RATES.get(insurance_provider, INSURANCE_RATES["default"])
+    total_cost = rates["appointment_cost"]
+    co_pay = rates["co_pay"]
+    
     return {
-        "totalCost": rates["appointment_cost"],
-        "patientCopay": rates["co_pay"],
-        "insuranceClaim": rates["appointment_cost"] - rates["co_pay"]
+        "totalCost": total_cost,
+        "patientCopay": co_pay,
+        "insuranceClaim": total_cost - co_pay
     }
 
+
 def send_email_to_patient(email: str, booking_details: dict):
+    """
+    Sends a confirmation email using a secure SMTP connection.
+    NOTE: You must configure an application-specific password for your email account
+    and store it securely. Do NOT hardcode your main email password here.
+    """
     smtp_server = os.environ.get('SMTP_SERVER', "smtp.gmail.com")
     smtp_port = int(os.environ.get('SMTP_PORT', 587))
     sender_email = os.environ.get('SMTP_EMAIL', "niljoshna28@gmail.com")
@@ -104,21 +116,63 @@ def send_email_to_patient(email: str, booking_details: dict):
     msg["From"] = sender_email
     msg["To"] = email
 
-    text_content = f"""
-Appointment Confirmation
-Hello,
-Your appointment has been successfully booked with {booking_details.get('doctorName')} on {booking_details.get('appointmentDate')} at {booking_details.get('appointmentTime')}.
-"""
-    html_content = f"""
-<html><body><h2>Appointment Confirmation</h2>
-<p>Your appointment has been successfully booked with <b>{booking_details.get('doctorName')}</b> on <b>{booking_details.get('appointmentDate')}</b> at <b>{booking_details.get('appointmentTime')}</b>.</p>
-</body></html>
-"""
+    # Create the plain-text and HTML versions of your message
+    cost_breakdown = booking_details.get('costBreakdown', {})
+    total_cost = cost_breakdown.get('totalCost', 0)
+    patient_copay = cost_breakdown.get('patientCopay', 0)
 
-    msg.attach(MIMEText(text_content, "plain"))
-    msg.attach(MIMEText(html_content, "html"))
+    text_content = f"""
+    Appointment Confirmation
+    Hello,
+    Your appointment has been successfully booked with {booking_details.get('doctorName')} on {booking_details.get('appointmentDate')} at {booking_details.get('appointmentTime')}.
+    
+    Booking Details:
+    - Appointment Type: {booking_details.get('bookingType')}
+    - Doctor: {booking_details.get('doctorName')}
+    - Date: {booking_details.get('appointmentDate')}
+    - Time: {booking_details.get('appointmentTime')}
+    
+    Cost Breakdown:
+    - Total Appointment Cost: ${total_cost:.2f}
+    - Your Co-pay (After Insurance Claim): ${patient_copay:.2f}
+    
+    We look forward to seeing you!
+    
+    Best regards,
+    The Clinic Team
+    """
+
+    html_content = f"""
+    <html>
+    <body style="font-family: sans-serif; line-height: 1.6;">
+        <h2>Appointment Confirmation</h2>
+        <p>Hello,</p>
+        <p>Your appointment has been successfully booked with <b>{booking_details.get('doctorName')}</b> on <b>{booking_details.get('appointmentDate')}</b> at <b>{booking_details.get('appointmentTime')}</b>.</p>
+        <h3>Booking Details:</h3>
+        <ul>
+            <li><b>Appointment Type:</b> {booking_details.get('bookingType')}</li>
+            <li><b>Doctor:</b> {booking_details.get('doctorName')}</li>
+            <li><b>Date:</b> {booking_details.get('appointmentDate')}</li>
+            <li><b>Time:</b> {booking_details.get('appointmentTime')}</li>
+        </ul>
+        <h3>Cost Breakdown:</h3>
+        <ul>
+            <li><b>Total Appointment Cost:</b> ${total_cost:.2f}</li>
+            <li><b>Your Co-pay (After Insurance Claim):</b> ${patient_copay:.2f}</li>
+        </ul>
+        <p>We look forward to seeing you!</p>
+        <p>Best regards,<br>The Clinic Team</p>
+    </body>
+    </html>
+    """
+
+    part1 = MIMEText(text_content, "plain")
+    part2 = MIMEText(html_content, "html")
+    msg.attach(part1)
+    msg.attach(part2)
 
     try:
+        # Create a secure SSL context and a connection
         context = ssl.create_default_context()
         with smtplib.SMTP(smtp_server, smtp_port) as server:
             server.starttls(context=context)
@@ -126,7 +180,7 @@ Your appointment has been successfully booked with {booking_details.get('doctorN
             server.sendmail(sender_email, email, msg.as_string())
             logging.info(f"Email sent successfully via SMTP to {email}")
     except Exception as e:
-        logging.error(f"Failed to send email via SMTP: {e}")
+        logging.error(f"Failed to send email via SMTP: {e}"))
 
 def find_available_doctors(specialty, location, date_str=None):
     available_doctors = []
