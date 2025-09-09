@@ -2,7 +2,7 @@ import os
 from flask import Flask, request, jsonify
 import firebase_admin
 from firebase_admin import credentials, firestore
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import logging
 import smtplib
 import ssl
@@ -22,11 +22,14 @@ app = Flask(__name__)
 # --- Firestore Connection Setup ---
 db = None
 try:
+    # On Cloud Run, credentials are automatically provided by the environment.
     cred = credentials.ApplicationDefault()
     firebase_admin.initialize_app(cred)
     logging.info("Firestore connected using Cloud Run environment credentials.")
     db = firestore.client()
 except ValueError:
+    # If running locally, you'll need a service account JSON file.
+    # Set the 'GOOGLE_APPLICATION_CREDENTIALS' environment variable to its file path.
     try:
         if os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'):
             cred = credentials.Certificate(os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'))
@@ -37,7 +40,7 @@ except ValueError:
             logging.warning("No GOOGLE_APPLICATION_CREDENTIALS found. Running in mock data mode.")
     except Exception as e:
         logging.error(f"Error initializing Firebase: {e}")
-        logging.error("Continuing without database connection. Using mock data.")
+        logging.warning("Continuing without database connection. Using mock data.")
 
 # Mock data for demonstration if Firebase is not connected
 MOCK_PATIENTS = {
@@ -59,7 +62,10 @@ MOCK_DOCTORS = {
         'specialty': 'General Practitioner',
         'city': 'New York',
         'availability': {
-            '2025-09-07': ["13:00", "14:00"]
+            '2025-09-07': [
+                "13:00",
+                "14:00"
+            ]
         }
     },
     'gp-002': {
@@ -69,15 +75,30 @@ MOCK_DOCTORS = {
         'city': 'London',
         'availability': {
             '2025-09-07': [],
-            '2025-09-08': ["09:00", "10:00", "11:00", "12:00", "13:00"]
+            '2025-09-08': [
+                "09:00",
+                "10:00",
+                "11:00",
+                "12:00",
+                "13:00"
+            ]
         }
     }
 }
 
 INSURANCE_RATES = {
-    "MedStar Health": {"appointment_cost": 150.00, "co_pay": 25.00},
-    "Blue Cross Blue Shield": {"appointment_cost": 180.00, "co_pay": 30.00},
-    "default": {"appointment_cost": 200.00, "co_pay": 50.00}
+    "MedStar Health": {
+        "appointment_cost": 150.00,
+        "co_pay": 25.00
+    },
+    "Blue Cross Blue Shield": {
+        "appointment_cost": 180.00,
+        "co_pay": 30.00
+    },
+    "default": {
+        "appointment_cost": 200.00,
+        "co_pay": 50.00
+    }
 }
 
 # --- Core Business Logic Functions ---
@@ -100,12 +121,13 @@ def send_email_to_patient(email: str, booking_details: dict):
     """
     Sends a confirmation email using a secure SMTP connection.
     NOTE: You must configure an application-specific password for your email account
-    and store it securely. Do NOT hardcode your main email password here.
+    and store it securely as an environment variable (e.g., SMTP_PASSWORD).
+    Do NOT hardcode your main email password here.
     """
     smtp_server = os.environ.get('SMTP_SERVER', "smtp.gmail.com")
     smtp_port = int(os.environ.get('SMTP_PORT', 587))
-    sender_email = os.environ.get('SMTP_EMAIL', "niljoshna28@gmail.com")
-    password = os.environ.get('SMTP_PASSWORD', "nxlcscihekyxcedc")
+    sender_email = os.environ.get('SMTP_EMAIL', "your_email@gmail.com")
+    password = os.environ.get('SMTP_PASSWORD', "your_app_password")
 
     if sender_email == "your_email@gmail.com" or password == "your_app_password":
         logging.warning("SMTP configuration not set via environment variables. Cannot send email.")
@@ -180,126 +202,159 @@ def send_email_to_patient(email: str, booking_details: dict):
             server.sendmail(sender_email, email, msg.as_string())
             logging.info(f"Email sent successfully via SMTP to {email}")
     except Exception as e:
-        logging.error(f"Failed to send email via SMTP: {e}"))
+        logging.error(f"Failed to send email via SMTP: {e}")
 
-def find_available_doctors(specialty, location, date_str=None):
+
+def find_available_doctors(specialty, location, date_str):
+    """
+    Helper function to search for available doctors and their times on a specific date.
+    """
     available_doctors = []
     if db:
         docs_ref = db.collection('doctors')
-        docs = docs_ref.where(
-            filter=firestore.FieldFilter('specialty', '==', specialty.title())
-        ).where(
-            filter=firestore.FieldFilter('city', '==', location.title())
-        ).stream()
-
+        docs = docs_ref.where(filter=firestore.FieldFilter('specialty', '==', specialty)).where(filter=firestore.FieldFilter('city', '==', location)).stream()
         for doc in docs:
             doctor_data = doc.to_dict()
-            availability_map = doctor_data.get('availability', {})
-            valid_dates = [datetime.strptime(d, "%Y-%m-%d").date() for d, times in availability_map.items() if times]
-            if valid_dates:
-                earliest_date = min(valid_dates)
-                doctor_data['earliest_date'] = earliest_date
-                available_doctors.append(doctor_data)
-    else:
+            if doctor_data:
+                availability_map = doctor_data.get('availability', {})
+                # Check if availability for the date is a list
+                if date_str in availability_map and isinstance(availability_map[date_str], list):
+                    # If the list is not empty, add the full doctor data
+                    if availability_map[date_str]:
+                        available_doctors.append(doctor_data)
+                else:
+                    logging.warning(f"Skipping doctor {doctor_data.get('name')} due to invalid availability data for date {date_str}. Expected a list of strings.")
+            else:
+                logging.warning("Skipping an empty document found during doctor search.")
+    else: # Mock data fallback
         for doc in MOCK_DOCTORS.values():
-            if doc['specialty'].lower() == specialty.lower() and doc['city'].lower() == location.lower():
+            if doc['specialty'] == specialty and doc['city'] == location:
                 availability_map = doc.get('availability', {})
-                valid_dates = [datetime.strptime(d, "%Y-%m-%d").date() for d, times in availability_map.items() if times]
-                if valid_dates:
-                    earliest_date = min(valid_dates)
-                    doc['earliest_date'] = earliest_date
-                    available_doctors.append(doc)
-
-    available_doctors.sort(key=lambda d: d.get('earliest_date'))
+                if date_str in availability_map and isinstance(availability_map[date_str], list):
+                    if availability_map[date_str]:
+                        available_doctors.append(doc)
     return available_doctors
+
 
 # --- Webhook Endpoints ---
 @app.route('/')
 def home():
+    """Returns a simple message to confirm the service is running."""
     return "Webhook is running successfully!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
+    """
+    Dialogflow CX webhook for doctor availability and booking.
+    """
     logging.info("--- Webhook Request Received ---")
     request_data = request.get_json()
     logging.info(f"Full Request JSON: {request_data}")
-
+    
     session_info = request_data.get('sessionInfo', {})
     parameters = session_info.get('parameters', {})
     tag = request_data.get('fulfillmentInfo', {}).get('tag')
-
+    
     response_text = "I'm sorry, an error occurred. Please try again."
-
-    # --- Search Doctors ---
+    
+    # --- Tag: search_doctors ---
     if tag == 'search_doctors':
         specialty = parameters.get('specialty')
         location_param = parameters.get('location')
         location = location_param.get('city') if isinstance(location_param, dict) else location_param
-
+        
+        date_param = parameters.get('date')
+        if date_param:
+            try:
+                # Convert the ISO 8601 date string to a date object
+                requested_date_obj = datetime.fromisoformat(date_param.replace('Z', '+00:00')).date()
+                date_str = requested_date_obj.strftime('%Y-%m-%d')
+            except ValueError:
+                response_text = "I couldn't understand the date provided. Please try again."
+                return jsonify({'fulfillmentResponse': {'messages': [{'text': {'text': [response_text]}}]}})
+        else:
+            # If no date is provided, use the current date in UTC to avoid timezone issues
+            requested_date_obj = datetime.now(pytz.utc).date()
+            date_str = requested_date_obj.strftime('%Y-%m-%d')
+            logging.info(f"No date provided. Using current date: {date_str}")
+        
         if not specialty or not location:
             response_text = "I'm missing some information. Please provide your preferred specialty and location."
         else:
             try:
-                available_doctors = find_available_doctors(specialty, location)
-
-                if available_doctors:
-                    response_text_list = ["Here are the doctors I found:"]
-                    tomorrow = datetime.now(pytz.utc).date() + timedelta(days=1)
-
-                    for i, doc in enumerate(available_doctors[:5]):
-                        response_text_list.append(f"\n{i+1}. {doc['name']} ({doc['specialty']}, {doc['city']})")
-                        availability_map = doc.get('availability', {})
-                        shown_dates = 0
-
-                        for date_str, times in sorted(availability_map.items()):
-                            try:
-                                date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
-                            except ValueError:
-                                continue
-
-                            if date_obj >= tomorrow and times:
-                                response_text_list.append(f"    - On {date_str}:")
-                                for time_slot in times:
-                                    response_text_list.append(f"        - {time_slot}")
-                                shown_dates += 1
-                                if shown_dates >= 3:
-                                    break
-                    response_text = "\n".join(response_text_list)
+                today = datetime.now(pytz.utc).date()
+                
+                if requested_date_obj < today:
+                    response_text = "I can only check for future appointments. Please provide a date that isn't in the past."
                 else:
-                    response_text = f"I could not find any {specialty} doctors in {location} with availability."
+                    # Initial search for the requested date
+                    available_doctors = find_available_doctors(specialty, location, date_str)
+                    
+                    # If no doctors found, search for the next available date
+                    if not available_doctors:
+                        found_next_date = False
+                        for i in range(1, 8):
+                            next_date = requested_date_obj + timedelta(days=i)
+                            next_date_str = next_date.strftime('%Y-%m-%d')
+                            available_doctors = find_available_doctors(specialty, location, next_date_str)
+                            if available_doctors:
+                                response_text_list = [f"I couldn't find any appointments for your requested date. However, I found some for the next available date, which is {next_date.strftime('%B %d, %Y')}."]
+                                found_next_date = True
+                                for i, doc in enumerate(available_doctors):
+                                    response_text_list.append(f"\n{i+1}. {doc['name']}, {doc['specialty']}")
+                                    response_text_list.append(f"    - Available date: {next_date.strftime('%B %d, %Y')}")
+                                    response_text_list.append("    - Available times:")
+                                    for time in doc['availability'][next_date_str]:
+                                        response_text_list.append(f"      - {time}")
+                                response_text = "\n".join(response_text_list)
+                                break
+                    
+                        if not found_next_date:
+                            response_text = f"I could not find any {specialty} doctors in {location} available on or after {requested_date_obj.strftime('%B %d, %Y')}. Would you like to check a different date or location?"
+                    else:
+                        response_text_list = []
+                        for i, doc in enumerate(available_doctors):
+                            response_text_list.append(f"\n{i+1}. {doc['name']}, {doc['specialty']}")
+                            response_text_list.append(f"    - Available date: {datetime.strptime(date_str, '%Y-%m-%d').strftime('%B %d, %Y')}")
+                            response_text_list.append("    - Available times:")
+                            for time in doc['availability'][date_str]:
+                                response_text_list.append(f"      - {time}")
+                        response_text = "\n".join(response_text_list)
+                    
             except Exception as e:
                 logging.error(f"Error searching for doctors: {e}")
                 logging.error(traceback.format_exc())
                 response_text = "I am having trouble looking for doctors right now. Please try again later."
-
-    # --- Collect Patient Info ---
+    
+    # --- Tag: collect_patient_info ---
     elif tag == 'collect_patient_info':
         try:
-            doctor_name = parameters.get('doctor_name')
-            appointment_time = parameters.get('appointment_time')
-            appointment_date = parameters.get('appointment_date')
-
-            if not doctor_name or not appointment_time or not appointment_date:
+            # Capture the parameters from the user's previous selection
+            doctor_name_param = parameters.get('doctor_name')
+            appointment_time_param = parameters.get('appointment_time')
+            appointment_date_param = parameters.get('appointment_date')
+            
+            if not doctor_name_param or not appointment_time_param or not appointment_date_param:
                 response_text = "I'm sorry, I seem to have lost the appointment details. Please try selecting a time again."
             else:
+                # A custom payload is used to pass data to a rich UI in Dialogflow.
                 custom_payload = {
-                    "doctorName": doctor_name,
-                    "appointmentTime": appointment_time,
-                    "appointmentDate": appointment_date
+                    "doctorName": doctor_name_param['original'],
+                    "appointmentTime": f"{appointment_time_param['hours']}:{appointment_time_param['minutes']}",
+                    "appointmentDate": f"{appointment_date_param['year']}-{appointment_date_param['month']}-{appointment_date_param['day']}"
                 }
+                
+                # The fulfillment response will contain the custom payload
+                # and a generic text prompt for the next step.
+                formatted_date = datetime.strptime(custom_payload['appointmentDate'], '%Y-%m-%d').strftime('%B %d, %Y')
+                fulfillment_text = f"You're booking with {custom_payload['doctorName']} on {formatted_date} at {custom_payload['appointmentTime']}. Please provide your personal and insurance details to complete the booking."
 
                 return jsonify({
                     'fulfillmentResponse': {
                         'messages': [
                             {
                                 'text': {
-                                    'text': ["You're booking with " + doctor_name['original'] + " on " +
-                                            str(int(appointment_date['year'])) + "/" +
-                                            str(int(appointment_date['month'])) + "/" +
-                                            str(int(appointment_date['day'])) + " at " +
-                                            str(int(appointment_time['hours'])) + ":" +
-                                            str(int(appointment_time['minutes'])) +
-                                            ". Let's collect your details.\nPlease provide your personal and insurance details to complete the booking."]
+                                    'text': [fulfillment_text]
                                 }
                             },
                             {
@@ -314,49 +369,11 @@ def webhook():
             logging.error(f"Error in collect_patient_info: {e}")
             logging.error(traceback.format_exc())
             response_text = "I am having trouble with the next step. Please try again later."
-
-    # --- Confirm Cost ---
-    elif tag == 'ConfirmCost':
-        try:
-            patient_name_param = parameters.get('name')
-            dob_param = parameters.get('dateofbirth')
-            insurance_provider = parameters.get('insuranceprovider')
-            policy_number = parameters.get('policynumber')
-            specialty = parameters.get('specialty')
-            location = parameters.get('location')
-            doctor_name = parameters.get('doctor_name')
-            appointment_date_param = parameters.get('appointment_date')
-            appointment_time = parameters.get('appointment_time')
-
-            if not all([patient_name_param, dob_param, insurance_provider, policy_number, specialty, location, doctor_name, appointment_date_param, appointment_time]):
-                response_text = "I'm missing some information to complete your booking. Please provide all details."
-            else:
-                cost_details = calculate_appointment_cost(insurance_provider)
-                patient_data = MOCK_PATIENTS.get(patient_name_param.get('original'))
-                if patient_data:
-                    booking_details = {
-                        "bookingId": str(uuid.uuid4()),
-                        "bookingType": "appointment",
-                        "doctorName": doctor_name['original'],
-                        "specialty": specialty,
-                        "appointmentDate": f"{appointment_date_param['year']}-{appointment_date_param['month']}-{appointment_date_param['day']}",
-                        "appointmentTime": f"{appointment_time['hours']}:{appointment_time['minutes']}",
-                        "costBreakdown": cost_details,
-                        "status": "confirmed"
-                    }
-                    send_email_to_patient(patient_data['email'], booking_details)
-                    response_text = f"Success! Your booking has been confirmed with {doctor_name['original']}. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
-                else:
-                    response_text = "I could not find a patient with the provided details to confirm your booking. Please check your information."
-
-        except Exception as e:
-            logging.error(f"Error during ConfirmCost process: {e}")
-            logging.error(traceback.format_exc())
-            response_text = "I am having trouble confirming your booking right now. Please try again later."
-
-    # --- Book Appointment ---
+    
+    # --- Tag: book_appointment ---
     elif tag == 'book_appointment':
         try:
+            # Corrected parameter names to match Dialogflow's sessionInfo
             patient_name_param = parameters.get('name')
             dob_param = parameters.get('dateofbirth')
             insurance_provider = parameters.get('insuranceprovider')
@@ -365,52 +382,128 @@ def webhook():
             doctor_name_param = parameters.get('doctor_name')
             appointment_date_param = parameters.get('appointment_date')
             appointment_time_param = parameters.get('appointment_time')
+            location = parameters.get('location').get('city') if isinstance(parameters.get('location'), dict) else parameters.get('location')
 
-            if not all([patient_name_param, dob_param, insurance_provider, policy_number, specialty, doctor_name_param, appointment_date_param, appointment_time_param]):
+            if not all([patient_name_param, dob_param, insurance_provider, policy_number, specialty, doctor_name_param, appointment_date_param, appointment_time_param, location]):
                 response_text = "I'm missing some information to complete your booking. Please provide all details."
             else:
                 appointment_date = f"{appointment_date_param['year']}-{appointment_date_param['month']}-{appointment_date_param['day']}"
                 appointment_time = f"{appointment_time_param['hours']}:{appointment_time_param['minutes']}"
                 doctor_name = doctor_name_param['original']
                 patient_full_name = patient_name_param['original']
-
+                
+                # Split the full name into first and last name to match the Firestore schema
                 name_parts = patient_full_name.split(' ', 1)
                 first_name = name_parts[0]
                 last_name = name_parts[1] if len(name_parts) > 1 else ''
 
-                patient_data = MOCK_PATIENTS.get(patient_full_name)
-                if patient_data:
-                    doctor_data = next((doc for doc in MOCK_DOCTORS.values() if doc['name'] == doctor_name), None)
-                    if doctor_data:
-                        availability_list = doctor_data.get('availability', {}).get(appointment_date, [])
-                        if appointment_time in availability_list:
-                            availability_list.remove(appointment_time)
-                            MOCK_DOCTORS[doctor_data['id']]['availability'][appointment_date] = availability_list
-                            cost_details = calculate_appointment_cost(insurance_provider)
-                            booking_details = {
-                                "bookingId": str(uuid.uuid4()),
-                                "bookingType": "appointment",
-                                "doctorName": doctor_name,
-                                "specialty": specialty,
-                                "appointmentDate": appointment_date,
-                                "appointmentTime": appointment_time,
-                                "costBreakdown": cost_details,
-                                "status": "confirmed"
-                            }
-                            patient_data['bookings'].append(booking_details)
-                            send_email_to_patient(patient_data['email'], booking_details)
-                            response_text = f"Success! Your booking with {doctor_name} on {appointment_date} at {appointment_time} has been confirmed. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
-                        else:
-                            response_text = "The selected time slot is not available. Please choose from the list of available times."
+                patient_doc_ref = None
+                patient_data = None
+                if db:
+                    patients_ref = db.collection('patients')
+                    # Query using both name and surname fields
+                    patient_query = patients_ref.where(filter=google_firestore.FieldFilter('name', '==', first_name)).where(filter=google_firestore.FieldFilter('surname', '==', last_name)).limit(1).stream()
+                    
+                    for doc in patient_query:
+                        patient_doc_ref = doc.reference
+                        patient_data = doc.to_dict()
+                        break
+                    
+                    if not patient_doc_ref:
+                        response_text = "I could not find a patient with the provided details. Please try again."
                     else:
-                        response_text = "The doctor you selected could not be found in our records."
-                else:
-                    response_text = "I could not find a patient with the provided details. Please try again."
+                        doctor_doc_ref = None
+                        doctors_ref = db.collection('doctors')
+                        doctor_query = doctors_ref.where(filter=google_firestore.FieldFilter('name', '==', doctor_name)).limit(1).stream()
+                        for doc in doctor_query:
+                            doctor_doc_ref = doc.reference
+                            doctor_data = doc.to_dict()
+                            break
+
+                        if not doctor_doc_ref:
+                            response_text = "The doctor you selected could not be found."
+                        else:
+                            # Check if the time slot is a string within the availability array
+                            availability_list = doctor_data.get('availability', {}).get(appointment_date, [])
+                            if appointment_time in availability_list:
+                                cost_details = calculate_appointment_cost(insurance_provider)
+                                booking_details = {
+                                    "bookingId": str(uuid.uuid4()),
+                                    "bookingType": "appointment",
+                                    "doctorName": doctor_name,
+                                    "specialty": specialty,
+                                    "appointmentDate": appointment_date,
+                                    "appointmentTime": appointment_time,
+                                    "costBreakdown": cost_details,
+                                    "status": "confirmed"
+                                }
+
+                                # Use a Firestore transaction to ensure atomicity
+                                @google_firestore.transactional
+                                def update_availability(transaction, doc_ref, date, time):
+                                    snapshot = doc_ref.get(transaction=transaction)
+                                    doc_data = snapshot.to_dict()
+                                    if doc_data and date in doc_data.get('availability', {}) and time in doc_data['availability'][date]:
+                                        updated_availability = doc_data['availability'][date]
+                                        updated_availability.remove(time)
+                                        transaction.update(doc_ref, {f'availability.{date}': updated_availability})
+                                        return True
+                                    return False
+
+                                transaction = db.transaction()
+                                success = update_availability(transaction, doctor_doc_ref, appointment_date, appointment_time)
+
+                                if success:
+                                    # Add the new booking to the patient's record
+                                    patient_bookings = patient_data.get('bookings', [])
+                                    patient_bookings.append(booking_details)
+                                    patient_doc_ref.update({'bookings': patient_bookings})
+                                    send_email_to_patient(patient_data['email'], booking_details)
+                                    response_text = f"Success! Your booking with {doctor_name} on {appointment_date} at {appointment_time} has been confirmed. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
+                                else:
+                                    response_text = "The selected time slot is no longer available. Please select another time."
+
+                            else:
+                                response_text = "The selected time slot is not available. Please choose from the list of available times."
+                else: # Mock data fallback
+                    patient_data = MOCK_PATIENTS.get(patient_full_name)
+                    if patient_data:
+                        doctor_data = next((doc for doc in MOCK_DOCTORS.values() if doc['name'] == doctor_name), None)
+                        if doctor_data:
+                            availability_list = doctor_data.get('availability', {}).get(appointment_date, [])
+                            if appointment_time in availability_list:
+                                availability_list.remove(appointment_time)
+                                MOCK_DOCTORS[doctor_data['id']]['availability'][appointment_date] = availability_list
+                                
+                                cost_details = calculate_appointment_cost(insurance_provider)
+                                booking_details = {
+                                    "bookingId": str(uuid.uuid4()),
+                                    "bookingType": "appointment",
+                                    "doctorName": doctor_name,
+                                    "specialty": specialty,
+                                    "appointmentDate": appointment_date,
+                                    "appointmentTime": appointment_time,
+                                    "costBreakdown": cost_details,
+                                    "status": "confirmed"
+                                }
+                                patient_data['bookings'].append(booking_details)
+                                send_email_to_patient(patient_data['email'], booking_details)
+                                response_text = f"Success! Your booking with {doctor_name} on {appointment_date} at {appointment_time} has been confirmed. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
+                            else:
+                                response_text = "The selected time slot is not available. Please choose from the list of available times."
+                        else:
+                            response_text = "The doctor you selected could not be found in our records."
+                    else:
+                        response_text = "I could not find a patient with the provided details. Please try again."
 
         except Exception as e:
             logging.error(f"Error during book_appointment process: {e}")
             logging.error(traceback.format_exc())
             response_text = "I am having trouble completing your booking right now. Please try again later."
+    else:
+        # Default response for unhandled tags
+        logging.warning(f"Unhandled tag: {tag}")
+        response_text = "I'm sorry, I don't know how to handle this request. Can you please be more specific?"
 
     logging.info(f"Sending response to Dialogflow: {response_text}")
     return jsonify({
@@ -418,6 +511,7 @@ def webhook():
             'messages': [{'text': {'text': [response_text]}}]
         }
     })
+
 
 if __name__ == '__main__':
     logging.info("Starting application locally...")
