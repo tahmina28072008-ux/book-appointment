@@ -2,7 +2,7 @@ import os
 from flask import Flask, request, jsonify
 import firebase_admin
 from firebase_admin import credentials, firestore
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import smtplib
 import ssl
@@ -13,13 +13,13 @@ import uuid
 import pytz
 from google.cloud import firestore as google_firestore
 
-# --- Logging ---
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 
-# --- Flask App ---
+# Initialize Flask app
 app = Flask(__name__)
 
-# --- Firestore Setup ---
+# --- Firestore Connection Setup ---
 db = None
 try:
     cred = credentials.ApplicationDefault()
@@ -34,12 +34,12 @@ except ValueError:
             logging.info("Firestore connected using GOOGLE_APPLICATION_CREDENTIALS.")
             db = firestore.client()
         else:
-            logging.warning("No FIREBASE credentials found. Running in mock mode.")
+            logging.warning("No GOOGLE_APPLICATION_CREDENTIALS found. Running in mock data mode.")
     except Exception as e:
-        logging.error(f"Error initializing Firestore: {e}")
-        logging.warning("Continuing without database connection.")
+        logging.error(f"Error initializing Firebase: {e}")
+        logging.error("Continuing without database connection. Using mock data.")
 
-# --- Mock Data ---
+# Mock data for demonstration if Firebase is not connected
 MOCK_PATIENTS = {
     'Tahmina Akhtar': {
         'name': 'Tahmina',
@@ -57,11 +57,9 @@ MOCK_DOCTORS = {
         'id': 'gp-001',
         'name': 'Dr. Lucy Morgan, MRCGP',
         'specialty': 'General Practitioner',
-        'city': 'London',
+        'city': 'New York',
         'availability': {
-            '2025-09-10': ["04:00 PM", "09:00 AM", "10:00 AM"],
-            '2025-09-11': ["04:00 PM", "05:00 PM", "09:00 AM", "10:00 AM"],
-            '2025-09-12': ["02:00 PM", "04:00 PM", "10:00 AM"]
+            '2025-09-07': ["13:00", "14:00"]
         }
     },
     'gp-002': {
@@ -70,9 +68,8 @@ MOCK_DOCTORS = {
         'specialty': 'General Practitioner',
         'city': 'London',
         'availability': {
-            '2025-09-10': ["05:00 PM", "09:00 AM", "10:00 AM"],
-            '2025-09-11': ["09:00 AM", "10:00 AM", "11:00 AM"],
-            '2025-09-12': ["02:00 PM", "09:00 AM", "10:00 AM", "11:00 AM"]
+            '2025-09-07': [],
+            '2025-09-08': ["09:00", "10:00", "11:00", "12:00", "13:00"]
         }
     }
 }
@@ -83,7 +80,7 @@ INSURANCE_RATES = {
     "default": {"appointment_cost": 200.00, "co_pay": 50.00}
 }
 
-# --- Core Functions ---
+# --- Core Business Logic Functions ---
 def calculate_appointment_cost(insurance_provider: str) -> dict:
     rates = INSURANCE_RATES.get(insurance_provider, INSURANCE_RATES["default"])
     return {
@@ -99,7 +96,7 @@ def send_email_to_patient(email: str, booking_details: dict):
     password = os.environ.get('SMTP_PASSWORD', "nxlcscihekyxcedc")
 
     if sender_email == "your_email@gmail.com" or password == "your_app_password":
-        logging.warning("SMTP not configured. Cannot send email.")
+        logging.warning("SMTP configuration not set via environment variables. Cannot send email.")
         return
 
     msg = MIMEMultipart("alternative")
@@ -107,21 +104,17 @@ def send_email_to_patient(email: str, booking_details: dict):
     msg["From"] = sender_email
     msg["To"] = email
 
-    cost_breakdown = booking_details.get('costBreakdown', {})
     text_content = f"""
-    Appointment Confirmation
-    Hello,
-    Your appointment has been successfully booked with {booking_details.get('doctorName')} 
-    on {booking_details.get('appointmentDate')} at {booking_details.get('appointmentTime')}.
-    Total cost: ${cost_breakdown.get('totalCost', 0)}, Co-pay: ${cost_breakdown.get('patientCopay', 0)}
-    """
+Appointment Confirmation
+Hello,
+Your appointment has been successfully booked with {booking_details.get('doctorName')} on {booking_details.get('appointmentDate')} at {booking_details.get('appointmentTime')}.
+"""
     html_content = f"""
-    <html><body><h2>Appointment Confirmation</h2>
-    <p>Your appointment has been successfully booked with <b>{booking_details.get('doctorName')}</b> 
-    on <b>{booking_details.get('appointmentDate')}</b> at <b>{booking_details.get('appointmentTime')}</b>.</p>
-    <p>Total cost: <b>${cost_breakdown.get('totalCost', 0)}</b>, Co-pay: <b>${cost_breakdown.get('patientCopay', 0)}</b></p>
-    </body></html>
-    """
+<html><body><h2>Appointment Confirmation</h2>
+<p>Your appointment has been successfully booked with <b>{booking_details.get('doctorName')}</b> on <b>{booking_details.get('appointmentDate')}</b> at <b>{booking_details.get('appointmentTime')}</b>.</p>
+</body></html>
+"""
+
     msg.attach(MIMEText(text_content, "plain"))
     msg.attach(MIMEText(html_content, "html"))
 
@@ -131,46 +124,42 @@ def send_email_to_patient(email: str, booking_details: dict):
             server.starttls(context=context)
             server.login(sender_email, password)
             server.sendmail(sender_email, email, msg.as_string())
-            logging.info(f"Email sent to {email}")
+            logging.info(f"Email sent successfully via SMTP to {email}")
     except Exception as e:
-        logging.error(f"Failed to send email: {e}")
+        logging.error(f"Failed to send email via SMTP: {e}")
 
-def find_available_doctors(specialty, location):
-    """
-    Retrieve doctors with upcoming availability starting from tomorrow
-    """
+def find_available_doctors(specialty, location, date_str=None):
     available_doctors = []
     if db:
         docs_ref = db.collection('doctors')
-        docs = docs_ref.where('specialty', '==', specialty.title()) \
-                       .where('city', '==', location.title()).stream()
+        docs = docs_ref.where(
+            filter=firestore.FieldFilter('specialty', '==', specialty.title())
+        ).where(
+            filter=firestore.FieldFilter('city', '==', location.title())
+        ).stream()
+
         for doc in docs:
             doctor_data = doc.to_dict()
-            available_doctors.append(doctor_data)
+            availability_map = doctor_data.get('availability', {})
+            valid_dates = [datetime.strptime(d, "%Y-%m-%d").date() for d, times in availability_map.items() if times]
+            if valid_dates:
+                earliest_date = min(valid_dates)
+                doctor_data['earliest_date'] = earliest_date
+                available_doctors.append(doctor_data)
     else:
         for doc in MOCK_DOCTORS.values():
             if doc['specialty'].lower() == specialty.lower() and doc['city'].lower() == location.lower():
-                available_doctors.append(doc)
+                availability_map = doc.get('availability', {})
+                valid_dates = [datetime.strptime(d, "%Y-%m-%d").date() for d, times in availability_map.items() if times]
+                if valid_dates:
+                    earliest_date = min(valid_dates)
+                    doc['earliest_date'] = earliest_date
+                    available_doctors.append(doc)
 
-    tomorrow = datetime.now(pytz.utc).date() + timedelta(days=1)
-    doctors_list = []
-    for doc in available_doctors:
-        availability = {}
-        for date_str, times in sorted(doc.get('availability', {}).items()):
-            date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
-            if date_obj >= tomorrow and times:
-                availability[date_str] = times
-        if availability:
-            doctors_list.append({
-                "name": doc['name'],
-                "specialty": doc['specialty'],
-                "city": doc['city'],
-                "availability": availability
-            })
+    available_doctors.sort(key=lambda d: d.get('earliest_date'))
+    return available_doctors
 
-    return doctors_list
-
-# --- Webhook ---
+# --- Webhook Endpoints ---
 @app.route('/')
 def home():
     return "Webhook is running successfully!"
@@ -179,7 +168,7 @@ def home():
 def webhook():
     logging.info("--- Webhook Request Received ---")
     request_data = request.get_json()
-    logging.info(f"Request JSON: {request_data}")
+    logging.info(f"Full Request JSON: {request_data}")
 
     session_info = request_data.get('sessionInfo', {})
     parameters = session_info.get('parameters', {})
@@ -194,24 +183,40 @@ def webhook():
         location = location_param.get('city') if isinstance(location_param, dict) else location_param
 
         if not specialty or not location:
-            response_text = "Please provide both specialty and location."
+            response_text = "I'm missing some information. Please provide your preferred specialty and location."
         else:
             try:
-                doctors_list = find_available_doctors(specialty, location)
-                if doctors_list:
-                    return jsonify({
-                        'fulfillmentResponse': {
-                            'messages': [
-                                {'payload': {'doctorList': {"message": "I found the following doctors:", "doctors": doctors_list}}}
-                            ]
-                        }
-                    })
+                available_doctors = find_available_doctors(specialty, location)
+
+                if available_doctors:
+                    response_text_list = ["Here are the doctors I found:"]
+                    tomorrow = datetime.now(pytz.utc).date() + timedelta(days=1)
+
+                    for i, doc in enumerate(available_doctors[:5]):
+                        response_text_list.append(f"\n{i+1}. {doc['name']} ({doc['specialty']}, {doc['city']})")
+                        availability_map = doc.get('availability', {})
+                        shown_dates = 0
+
+                        for date_str, times in sorted(availability_map.items()):
+                            try:
+                                date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+                            except ValueError:
+                                continue
+
+                            if date_obj >= tomorrow and times:
+                                response_text_list.append(f"    - On {date_str}:")
+                                for time_slot in times:
+                                    response_text_list.append(f"        - {time_slot}")
+                                shown_dates += 1
+                                if shown_dates >= 3:
+                                    break
+                    response_text = "\n".join(response_text_list)
                 else:
-                    response_text = f"No {specialty} doctors found in {location} with upcoming availability."
+                    response_text = f"I could not find any {specialty} doctors in {location} with availability."
             except Exception as e:
-                logging.error(f"Error searching doctors: {e}")
+                logging.error(f"Error searching for doctors: {e}")
                 logging.error(traceback.format_exc())
-                response_text = "Error looking for doctors. Please try again later."
+                response_text = "I am having trouble looking for doctors right now. Please try again later."
 
     # --- Collect Patient Info ---
     elif tag == 'collect_patient_info':
@@ -221,27 +226,40 @@ def webhook():
             appointment_date = parameters.get('appointment_date')
 
             if not doctor_name or not appointment_time or not appointment_date:
-                response_text = "Lost appointment details. Please select again."
+                response_text = "I'm sorry, I seem to have lost the appointment details. Please try selecting a time again."
             else:
                 custom_payload = {
                     "doctorName": doctor_name,
                     "appointmentTime": appointment_time,
                     "appointmentDate": appointment_date
                 }
+
                 return jsonify({
                     'fulfillmentResponse': {
                         'messages': [
                             {
-                                'text': {'text': [f"You're booking with {doctor_name['original']} on {appointment_date['year']}/{appointment_date['month']}/{appointment_date['day']} at {appointment_time['hours']}:{appointment_time['minutes']}. Please provide your personal and insurance details."]}
+                                'text': {
+                                    'text': ["You're booking with " + doctor_name['original'] + " on " +
+                                            str(int(appointment_date['year'])) + "/" +
+                                            str(int(appointment_date['month'])) + "/" +
+                                            str(int(appointment_date['day'])) + " at " +
+                                            str(int(appointment_time['hours'])) + ":" +
+                                            str(int(appointment_time['minutes'])) +
+                                            ". Let's collect your details.\nPlease provide your personal and insurance details to complete the booking."]
+                                }
                             },
-                            {'payload': {'customPayload': custom_payload}}
+                            {
+                                'payload': {
+                                    'customPayload': custom_payload
+                                }
+                            }
                         ]
                     }
                 })
         except Exception as e:
             logging.error(f"Error in collect_patient_info: {e}")
             logging.error(traceback.format_exc())
-            response_text = "Error with next step. Please try again."
+            response_text = "I am having trouble with the next step. Please try again later."
 
     # --- Confirm Cost ---
     elif tag == 'ConfirmCost':
@@ -249,21 +267,22 @@ def webhook():
             patient_name_param = parameters.get('name')
             dob_param = parameters.get('dateofbirth')
             insurance_provider = parameters.get('insuranceprovider')
+            policy_number = parameters.get('policynumber')
             specialty = parameters.get('specialty')
             location = parameters.get('location')
             doctor_name = parameters.get('doctor_name')
             appointment_date_param = parameters.get('appointment_date')
             appointment_time = parameters.get('appointment_time')
 
-            if not all([patient_name_param, dob_param, insurance_provider, specialty, location, doctor_name, appointment_date_param, appointment_time]):
-                response_text = "Missing information to complete booking."
+            if not all([patient_name_param, dob_param, insurance_provider, policy_number, specialty, location, doctor_name, appointment_date_param, appointment_time]):
+                response_text = "I'm missing some information to complete your booking. Please provide all details."
             else:
                 cost_details = calculate_appointment_cost(insurance_provider)
                 patient_data = MOCK_PATIENTS.get(patient_name_param.get('original'))
-
                 if patient_data:
                     booking_details = {
                         "bookingId": str(uuid.uuid4()),
+                        "bookingType": "appointment",
                         "doctorName": doctor_name['original'],
                         "specialty": specialty,
                         "appointmentDate": f"{appointment_date_param['year']}-{appointment_date_param['month']}-{appointment_date_param['day']}",
@@ -272,66 +291,81 @@ def webhook():
                         "status": "confirmed"
                     }
                     send_email_to_patient(patient_data['email'], booking_details)
-                    response_text = f"Booking confirmed with {doctor_name['original']}. Total cost: ${cost_details['totalCost']:.2f}, Co-pay: ${cost_details['patientCopay']:.2f}. Email sent."
+                    response_text = f"Success! Your booking has been confirmed with {doctor_name['original']}. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
                 else:
-                    response_text = "Patient not found. Check details."
+                    response_text = "I could not find a patient with the provided details to confirm your booking. Please check your information."
+
         except Exception as e:
-            logging.error(f"Error during ConfirmCost: {e}")
+            logging.error(f"Error during ConfirmCost process: {e}")
             logging.error(traceback.format_exc())
-            response_text = "Error confirming booking. Try again."
+            response_text = "I am having trouble confirming your booking right now. Please try again later."
 
     # --- Book Appointment ---
     elif tag == 'book_appointment':
         try:
             patient_name_param = parameters.get('name')
+            dob_param = parameters.get('dateofbirth')
             insurance_provider = parameters.get('insuranceprovider')
+            policy_number = parameters.get('policynumber')
             specialty = parameters.get('specialty')
             doctor_name_param = parameters.get('doctor_name')
             appointment_date_param = parameters.get('appointment_date')
             appointment_time_param = parameters.get('appointment_time')
 
-            if not all([patient_name_param, insurance_provider, specialty, doctor_name_param, appointment_date_param, appointment_time_param]):
-                response_text = "Missing booking information."
+            if not all([patient_name_param, dob_param, insurance_provider, policy_number, specialty, doctor_name_param, appointment_date_param, appointment_time_param]):
+                response_text = "I'm missing some information to complete your booking. Please provide all details."
             else:
-                patient_full_name = patient_name_param['original']
                 appointment_date = f"{appointment_date_param['year']}-{appointment_date_param['month']}-{appointment_date_param['day']}"
                 appointment_time = f"{appointment_time_param['hours']}:{appointment_time_param['minutes']}"
                 doctor_name = doctor_name_param['original']
+                patient_full_name = patient_name_param['original']
+
+                name_parts = patient_full_name.split(' ', 1)
+                first_name = name_parts[0]
+                last_name = name_parts[1] if len(name_parts) > 1 else ''
 
                 patient_data = MOCK_PATIENTS.get(patient_full_name)
-                doctor_data = next((doc for doc in MOCK_DOCTORS.values() if doc['name'] == doctor_name), None)
-
-                if patient_data and doctor_data:
-                    times = doctor_data['availability'].get(appointment_date, [])
-                    if appointment_time in times:
-                        times.remove(appointment_time)
-                        doctor_data['availability'][appointment_date] = times
-                        cost_details = calculate_appointment_cost(insurance_provider)
-                        booking_details = {
-                            "bookingId": str(uuid.uuid4()),
-                            "doctorName": doctor_name,
-                            "specialty": specialty,
-                            "appointmentDate": appointment_date,
-                            "appointmentTime": appointment_time,
-                            "costBreakdown": cost_details,
-                            "status": "confirmed"
-                        }
-                        patient_data['bookings'].append(booking_details)
-                        send_email_to_patient(patient_data['email'], booking_details)
-                        response_text = f"Booking confirmed with {doctor_name} on {appointment_date} at {appointment_time}. Total cost: ${cost_details['totalCost']:.2f}, Co-pay: ${cost_details['patientCopay']:.2f}."
+                if patient_data:
+                    doctor_data = next((doc for doc in MOCK_DOCTORS.values() if doc['name'] == doctor_name), None)
+                    if doctor_data:
+                        availability_list = doctor_data.get('availability', {}).get(appointment_date, [])
+                        if appointment_time in availability_list:
+                            availability_list.remove(appointment_time)
+                            MOCK_DOCTORS[doctor_data['id']]['availability'][appointment_date] = availability_list
+                            cost_details = calculate_appointment_cost(insurance_provider)
+                            booking_details = {
+                                "bookingId": str(uuid.uuid4()),
+                                "bookingType": "appointment",
+                                "doctorName": doctor_name,
+                                "specialty": specialty,
+                                "appointmentDate": appointment_date,
+                                "appointmentTime": appointment_time,
+                                "costBreakdown": cost_details,
+                                "status": "confirmed"
+                            }
+                            patient_data['bookings'].append(booking_details)
+                            send_email_to_patient(patient_data['email'], booking_details)
+                            response_text = f"Success! Your booking with {doctor_name} on {appointment_date} at {appointment_time} has been confirmed. The total cost is ${cost_details['totalCost']:.2f} with a patient co-pay of ${cost_details['patientCopay']:.2f}. An email has been sent to your registered address."
+                        else:
+                            response_text = "The selected time slot is not available. Please choose from the list of available times."
                     else:
-                        response_text = "Selected time not available."
+                        response_text = "The doctor you selected could not be found in our records."
                 else:
-                    response_text = "Patient or doctor not found."
-        except Exception as e:
-            logging.error(f"Error booking appointment: {e}")
-            logging.error(traceback.format_exc())
-            response_text = "Error completing booking. Try again."
+                    response_text = "I could not find a patient with the provided details. Please try again."
 
-    logging.info(f"Response: {response_text}")
-    return jsonify({'fulfillmentResponse': {'messages': [{'text': {'text': [response_text]}}]}})
+        except Exception as e:
+            logging.error(f"Error during book_appointment process: {e}")
+            logging.error(traceback.format_exc())
+            response_text = "I am having trouble completing your booking right now. Please try again later."
+
+    logging.info(f"Sending response to Dialogflow: {response_text}")
+    return jsonify({
+        'fulfillmentResponse': {
+            'messages': [{'text': {'text': [response_text]}}]
+        }
+    })
 
 if __name__ == '__main__':
-    logging.info("Starting app locally...")
+    logging.info("Starting application locally...")
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
